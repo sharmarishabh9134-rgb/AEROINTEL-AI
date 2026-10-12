@@ -1,0 +1,5 @@
+[tool.vercel]
+entrypoint = "backend.app.main:app"
+
+[tool.vercel.scripts]
+build = "python -m backend.scripts.train_maintenance_model"

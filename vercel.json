@@ -1,8 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "pip install -r backend/requirements.txt",
   "functions": {
-    "app/**/*.py": {
-      "includeFiles": "{index.html,data/**/*.json}"
+    "backend/app/**/*.py": {
+      "includeFiles": "{frontend/index.html,data/**/*,backend/models/**}"
     }
   }
 }

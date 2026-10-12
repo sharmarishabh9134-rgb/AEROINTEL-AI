@@ -1,8 +1,8 @@
 # AEROINTEL AI
 
-The existing responsive dashboard is served by a FastAPI backend. Read-only dashboard data is fictional and marked as demo data. The default backend stores records in a local SQLite file so the app works without external accounts. Configure `DATABASE_URL` with a Supabase PostgreSQL connection string to persist records there.
+The responsive dashboard is served by a FastAPI backend. Read-only dashboard data is fictional and marked as demo data. The default backend stores records in a local SQLite file at the repository root so the app works without external accounts. Run commands from the repository root; this keeps `.env` and relative SQLite paths anchored there. Configure `DATABASE_URL` with a Supabase PostgreSQL connection string to persist records there.
 
-The current frontend is a single `index.html` served by the same FastAPI service. Its shared API client reads `window.AEROINTEL_CONFIG.apiBaseUrl`; `/api/client-config.js` supplies the server-configured `PUBLIC_API_BASE_URL`. Leave it blank for same-origin hosting. If you deploy `index.html` on a separate static host, provide `window.AEROINTEL_CONFIG = { apiBaseUrl: "https://your-api-host" }` in that host's deployment configuration before the dashboard's API client starts, and set `FRONTEND_URL` on the API to the static site's origin. Keep credentials out of this browser configuration.
+The frontend is a single `frontend/index.html` served by the same FastAPI service. Its shared API client reads `window.AEROINTEL_CONFIG.apiBaseUrl`; `/api/client-config.js` supplies the server-configured `PUBLIC_API_BASE_URL`. Leave it blank for same-origin hosting. If you deploy `frontend/index.html` on a separate static host, provide `window.AEROINTEL_CONFIG = { apiBaseUrl: "https://your-api-host" }` in that host's deployment configuration before the dashboard's API client starts, and set `FRONTEND_URL` on the API to the static site's origin. Keep credentials out of this browser configuration.
 
 ## Run locally
 
@@ -12,7 +12,7 @@ The current frontend is a single `index.html` served by the same FastAPI service
    ```powershell
    py -3.11 -m venv .venv
    .\.venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
+   pip install -r backend/requirements.txt
    Copy-Item .env.example .env
    ```
 
@@ -20,12 +20,12 @@ The current frontend is a single `index.html` served by the same FastAPI service
 4. Start the dashboard and API:
 
    ```powershell
-   uvicorn app.main:app --reload
+   uvicorn backend.app.main:app --reload
    ```
 
-5. Open <http://127.0.0.1:8000>. API documentation is at <http://127.0.0.1:8000/docs> in development. Health is at `/api/health`.
+5. Open <http://127.0.0.1:8000>. API documentation is at <http://127.0.0.1:8000/docs> in development. Health is at `/api/health`. Run the install, startup, and script commands from the repository root so `.env` and the default SQLite database stay there.
 
-The demo seed inserts into empty tables only; it never deletes or replaces rows. To initialize/seed explicitly, run `python -m scripts.seed_demo` after setting `.env`.
+The demo seed inserts into empty tables only; it never deletes or replaces rows. To initialize/seed explicitly, run `python -m backend.scripts.seed_demo` after setting `.env`.
 
 ## Public Indian military aviation inventory estimates
 
@@ -34,10 +34,10 @@ The dashboard's **Public Fleet Estimates** view uses the supplied October 10, 20
 For local SQLite, the table is created by the app and import can be repeated safely:
 
 ```powershell
-python -m scripts.import_public_inventory
+python -m backend.scripts.import_public_inventory
 ```
 
-For PostgreSQL/Supabase, inspect the schema and apply reviewed additive migration [`migrations/003_public_inventory_estimates.sql`](migrations/003_public_inventory_estimates.sql) first, grant the backend role select/insert/update on `public_inventory_records` plus sequence access, and add the dedicated-role RLS policy. Then run the same importer. It upserts by the stable model/service/dataset-version key; it does not delete or replace records. The importer requires the intended database configured in `DATABASE_URL` and never creates application tables in PostgreSQL automatically.
+For PostgreSQL/Supabase, inspect the schema and apply reviewed additive migration [`backend/migrations/003_public_inventory_estimates.sql`](backend/migrations/003_public_inventory_estimates.sql) first, grant the backend role select/insert/update on `public_inventory_records` plus sequence access, and add the dedicated-role RLS policy. Then run the same importer. It upserts by the stable model/service/dataset-version key; it does not delete or replace records. The importer requires the intended database configured in `DATABASE_URL` and never creates application tables in PostgreSQL automatically.
 
 The supplied row list sums to 1,699 Air Force aircraft versus the approximate headline of 1,700, 367 Army Aviation aircraft, and 287 Navy aircraft. Across services the rows sum to 2,353 versus the approximate headline of 2,350. These differences are reported by the API/UI rather than silently changing the source rows. The last two differences are ordinary rounding/approximation at this precision. Inventory estimates do not establish serviceability, availability, maintenance, crew, or live aircraft location; those values are unavailable in the supplied source and are not inferred from inventory.
 
@@ -49,11 +49,11 @@ The referenced GlobalMilitary.net page may publish later snapshots and, when che
 2. Before changing an existing database, run the read-only inspector:
 
    ```powershell
-   python -m scripts.inspect_database
+   python -m backend.scripts.inspect_database
    ```
 
    It reports tables, columns, types, nullability, primary/foreign/unique keys, indexes, row counts (without reading row contents), model drift, and PostgreSQL RLS policies. It never creates, updates, or deletes data. Review this output against the application models before applying any schema change. The existing operational tables may have columns different from this application's model, so do not run the fresh-database migration against the existing project without that review.
-3. For a **completely fresh, empty database only**, apply these reviewed SQL files in order: [`migrations/001_initial_schema.sql`](migrations/001_initial_schema.sql), [`migrations/003_public_inventory_estimates.sql`](migrations/003_public_inventory_estimates.sql), [`migrations/004_weather_provenance.sql`](migrations/004_weather_provenance.sql), then [`migrations/005_normalized_identifier_uniqueness.sql`](migrations/005_normalized_identifier_uniqueness.sql). Migration `001` already creates `profiles`, `audit_logs`, and `analysis_reports.generated_by`, so `002` is not needed for a fresh database. `003` creates the tenth app table. Before `005`, verify there are no duplicate aircraft or crew IDs after trimming and case folding.
+3. For a **completely fresh, empty database only**, apply these reviewed SQL files in order: [`backend/migrations/001_initial_schema.sql`](backend/migrations/001_initial_schema.sql), [`backend/migrations/003_public_inventory_estimates.sql`](backend/migrations/003_public_inventory_estimates.sql), [`backend/migrations/004_weather_provenance.sql`](backend/migrations/004_weather_provenance.sql), then [`backend/migrations/005_normalized_identifier_uniqueness.sql`](backend/migrations/005_normalized_identifier_uniqueness.sql). Migration `001` already creates `profiles`, `audit_logs`, and `analysis_reports.generated_by`, so `002` is not needed for a fresh database. `003` creates the tenth app table. Before `005`, verify there are no duplicate aircraft or crew IDs after trimming and case folding.
 4. For an **existing database**, never run `001`. Inspect it first and compare the actual schema with the models. Apply only reviewed missing pieces: use `002` only for absent auth/audit support or the nullable report ownership column; `003` only if the inventory table is absent; `004` only if weather provenance columns/index are missing and after reviewing its `data_type` backfill and duplicate weather keys; and `005` only after checking normalized aircraft/crew IDs for duplicates. These files do not provide a migration ledger, and `CREATE TABLE IF NOT EXISTS` does not repair a pre-existing table with a different layout. Do not delete records to make a migration succeed.
 5. Create a dedicated Postgres login for the API with `NOBYPASSRLS` (do not use the Supabase `service_role` key or database owner for routine API traffic). In a privileged SQL session, create the role and grant only the needed access:
 
@@ -88,13 +88,27 @@ The referenced GlobalMilitary.net page may publish later snapshots and, when che
 
 Production startup requires `APP_ENV=production`, `DEMO_MODE=false`, a strong `JWT_SECRET_KEY`, PostgreSQL, and all ten tables used by the app. Production startup does not run `create_all` or seed data; it checks required tables, columns, and the weather/normalized-ID uniqueness indexes and exits with a clear error when setup is incomplete. The inspector also checks model index names; `001` currently names the schedule composite index `ix_schedule_starts_status` while the model expects `ix_schedule_records_starts_status`, so review this reported naming drift rather than assuming the indexes match by name. Apply only reviewed migrations before deployment.
 
-After the schema matches and the runtime role has the required grants and RLS policies, run `python -m scripts.test_postgres_connection`. It verifies required tables/columns and runs a `SELECT 1`, then inserts and reads a marker only in a PostgreSQL temporary table inside a transaction that it rolls back. It refuses to run on SQLite or in demo mode and does not touch application rows. Restart the API separately and verify `/api/health` plus an authenticated dashboard request to check persistence end to end.
+After the schema matches and the runtime role has the required grants and RLS policies, run `python -m backend.scripts.test_postgres_connection`. It verifies required tables/columns and runs a `SELECT 1`, then inserts and reads a marker only in a PostgreSQL temporary table inside a transaction that it rolls back. It refuses to run on SQLite or in demo mode and does not touch application rows. Restart the API separately and verify `/api/health` plus an authenticated dashboard request to check persistence end to end.
 
 ## Environment settings
 
 See `.env.example`. `GEMINI_API_KEY` is server-only. `GEMINI_MODEL` selects the model. Without a key or if Gemini fails, analysis uses an explicitly labeled rule-based fallback. `OPEN_METEO_LATITUDE`, `OPEN_METEO_LONGITUDE`, and `OPEN_METEO_LOCATION` set the configurable weather location. Weather requests use Open-Meteo with timeout and in-memory caching. A provider outage shows saved Open-Meteo records as explicitly stale when available, or an unavailable state; it never substitutes demo readings. The default graph filters to `source=open-meteo`; demo observations are available only through the explicit `mode=demo` graph API. Each graph record includes its source, observation timestamp, data type, location coordinates, and available fetch/creation timestamps. Forecast values are not physical sensor or aircraft measurements.
 
 The shared API client connects the dashboard's summary, aircraft, crew, maintenance, schedule, alerts, activity, analytics, weather, AI analysis, authentication, and report screens to the `/api` routes. Write operations are persisted through the configured SQLAlchemy database. Role checks remain enforced by the API. Schedule creation and updates reject overlapping reservations with HTTP 409 and return conflict details to the dashboard.
+
+## Synthetic ML Analytics
+
+The **ML Analytics** dashboard view uses `data/aircraft_maintenance_demo.csv`, a supplied synthetic demonstration dataset labeled `SYNTHETIC_DEMO`. It is not real maintenance data and must not be used to assess aircraft safety, readiness, or operational suitability. The exact banner **SYNTHETIC DEMO DATA — NOT FOR OPERATIONAL USE** appears anywhere ML results are presented.
+
+Model preprocessing, training, holdout evaluation, and inference run in the Python backend. The fixed stratified 80/20 split uses `random_state=42`; `record_id`, `data_origin`, and the target are excluded from model inputs. Training produces a scikit-learn preprocessing/classifier pipeline, accuracy, macro and per-class precision/recall/F1, class support, and a confusion matrix. The API never trains implicitly. To explicitly train or refresh the ignored local artifact, run from the repository root:
+
+```powershell
+python -m backend.scripts.train_maintenance_model
+```
+
+The generated `backend/models/maintenance_demo.joblib` is ignored by Git. The runtime verifies that its recorded dataset SHA-256 matches the current CSV; missing, invalid, or stale artifacts are reported as unavailable. APIs are `GET /api/ml/status`, `GET /api/ml/dataset-summary`, `GET /api/ml/evaluation`, and `POST /api/ml/predict`. Dashboard reads follow the same demo-mode/authentication policy as other operational reads. AI Decision Support retrieves ML results through backend functions and returns deterministic verified figures for ML questions; it does not pass those questions to Gemini or fabricate results. Its ML responses are explicitly marked as backend ML analytics.
+
+Vercel configuration runs the explicit training script at build time and includes the supplied CSV plus generated artifact in the Python function bundle. This project has not been deployed to Vercel; successful local verification does not confirm Vercel dependency or function bundle limits.
 
 The AI Decision Analyzer routes greetings, thanks, empty input, and unrelated questions before loading the dashboard snapshot or calling Gemini. Relevant questions use a fresh backend-generated snapshot; client-provided metrics are ignored. Responses separate calculated fields and timestamps from optional interpretation and recommendations. Each response labels its source (`Gemini AI`, `Rule-based fallback`, or `Intent handler`) and reports whether Gemini was configured and actually used; no confidence score is generated.
 
@@ -120,24 +134,24 @@ Sensitive-route throttling is in-process and protects against simple repeated at
 ## Tests
 
 ```powershell
-pytest -q
+python -m pytest -q
 ```
 
 The suite uses an isolated temporary SQLite database for API, auth/role, source separation, provenance, and provider failure behavior checks. To test Open-Meteo or Gemini against the real services, configure the corresponding environment secret and exercise `/api/weather/forecast` or log in and call `/api/ai/analyze` from Swagger; external API calls are not required by the local test suite.
 
 ## Render deployment
 
-- Build/install command: `pip install -r requirements.txt`
-- Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- Build/install command: `pip install -r backend/requirements.txt`
+- Start command: `uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT`
 - Set `APP_ENV=production`, `DEMO_MODE=false`, `DATABASE_URL`, `JWT_SECRET_KEY`, and `FRONTEND_URL` in Render's environment settings. Set Gemini variables if needed. Never commit `.env` or credentials.
-- The same service serves `index.html` and `/api`, so the dashboard and API are same-origin. `FRONTEND_URL` adds the configured CORS origin for a separately hosted frontend.
+- The same service serves `frontend/index.html` and `/api`, so the dashboard and API are same-origin. `FRONTEND_URL` adds the configured CORS origin for a separately hosted frontend.
 - Configure Render health check path as `/api/health`. Free plans may sleep when idle and can have cold starts or resource limits.
 
 ## Vercel deployment
 
-The app is a single FastAPI service, not Flask: `app/main.py` exports the `app` instance and serves both the dashboard and `/api` routes. Vercel's Python runtime supports FastAPI and recognizes this entry point. There is no separate frontend build command or output directory. `vercel.json` explicitly bundles the root `index.html` and versioned `data/**/*.json` files because the app reads them at runtime. Vercel's Python runtime is currently documented as beta.
+The app is a single FastAPI service: `backend/app/main.py` exports the `app` instance and serves both the dashboard and `/api` routes. The root `pyproject.toml` points Vercel to `backend.app.main:app`, and `vercel.json` installs `backend/requirements.txt` and bundles `frontend/index.html` plus the versioned `data/**/*.json` file. No frontend build step is required. The Vercel settings are prepared for the relocated app, but have not been validated by a deployment.
 
-Vercel Functions do not provide persistent local storage. Production must use PostgreSQL; the default `aerointel_demo.db` SQLite database is for local development only. Before deployment, configure a persistent PostgreSQL database, review its current schema with `python -m scripts.inspect_database`, and apply only the migrations required for that schema. Production startup checks tables, columns, and indexes and does not run migrations or seed demo data. Follow the Supabase PostgreSQL procedure above if Supabase is the chosen database; no Supabase connection is currently configured in this project folder.
+Vercel Functions provide an ephemeral, read-only application filesystem, so production must use PostgreSQL; the default `aerointel_demo.db` SQLite database is for local development only. The Python function bundle must also remain within Vercel's size limits. Before deployment, configure a persistent PostgreSQL database, review its current schema with `python -m backend.scripts.inspect_database`, and apply only the migrations required for that schema. Production startup checks tables, columns, and indexes and does not run migrations or seed demo data. Follow the Supabase PostgreSQL procedure above if Supabase is the chosen database; no Supabase connection is currently configured in this project folder.
 
 From this project directory, install and link the Vercel CLI, then configure environment variables in the Vercel project settings before the first deployment:
 
@@ -149,7 +163,7 @@ vercel link
 
 Set `APP_ENV=production`, `DEMO_MODE=false`, `DATABASE_URL` to the persistent PostgreSQL connection string, and `JWT_SECRET_KEY` to a random secret of at least 32 characters. Use a connection URL and database role appropriate for application traffic; do not use a Supabase service-role key as the database password. `FRONTEND_URL` is only needed when the dashboard is hosted on a different origin; the bundled dashboard and API are same-origin. Set `GEMINI_API_KEY` only if Gemini model responses are required. Configure the Open-Meteo coordinates and location for the intended region; no Open-Meteo API key is required. Never add secrets to browser configuration or commit them.
 
-Use the linked project to create and inspect a preview deployment, then deploy to production only after checking `/`, `/api/health`, registration/login, protected APIs, reports, the public inventory screen, and live weather. The CLI commands are `vercel` for a preview and `vercel --prod` for production. This local mirror has no `.git` directory, so CLI upload from this folder is the available deployment route unless it is first placed in a Git repository. Do not run `vercel --prod` until the database and environment variables are ready and the preview checks pass.
+Use the linked project to create and inspect a preview deployment, then deploy to production only after checking `/`, `/api/health`, registration/login, protected APIs, reports, the public inventory screen, and live weather. The CLI commands are `vercel` for a preview and `vercel --prod` for production. Do not run `vercel --prod` until the database and environment variables are ready and the preview checks pass.
 
 ## Credential rotation
 

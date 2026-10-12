@@ -2,9 +2,9 @@
 import json
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
-from app.database import Base, engine
-from app.inventory import import_inventory, inventory_summary, load_dataset
-from app.models import PublicInventoryRecord
+from backend.app.database import Base, engine
+from backend.app.inventory import import_inventory, inventory_summary, load_dataset
+from backend.app.models import PublicInventoryRecord
 
 
 def main() -> None:

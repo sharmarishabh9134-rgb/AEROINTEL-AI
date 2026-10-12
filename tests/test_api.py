@@ -14,24 +14,24 @@ os.environ["DEMO_MODE"] = "true"
 os.environ["APP_ENV"] = "test"
 os.environ["JWT_SECRET_KEY"] = "test-only-secret-with-at-least-32-characters"
 
-from app.config import get_settings
+from backend.app.config import get_settings
 get_settings.cache_clear()
 
 # Pytest plugins or earlier imports may have initialized the application engine
 # before this module's isolated test DATABASE_URL was set. Rebind it explicitly.
-import app.database as database
+import backend.app.database as database
 database.engine.dispose()
 database.engine = database.make_engine(os.environ["DATABASE_URL"])
 database.SessionLocal.configure(bind=database.engine)
 
 from fastapi.testclient import TestClient
-from app.main import app
-import app.main as main_module
+from backend.app.main import app
+import backend.app.main as main_module
 main_module.engine = database.engine
 main_module.settings = get_settings()
-from app.database import engine
-from app.database import SessionLocal
-from app.models import Profile
+from backend.app.database import engine
+from backend.app.database import SessionLocal
+from backend.app.models import Profile
 from sqlalchemy import select
 
 
@@ -66,7 +66,7 @@ def test_health_and_seeded_dashboard(client):
 
 
 def test_sqlite_reinitialization_preserves_existing_records(client):
-    from app.models import (Aircraft, Alert, AuditLog, Crew, MaintenanceRecord,
+    from backend.app.models import (Aircraft, Alert, AuditLog, Crew, MaintenanceRecord,
                             PublicInventoryRecord, ScheduleRecord, WeatherObservation)
 
     models = (Aircraft, Crew, MaintenanceRecord, ScheduleRecord, Alert, AuditLog,
@@ -92,14 +92,14 @@ def test_frontend_runtime_config_and_dev_cors(client):
 
 def test_production_cors_excludes_development_origins():
     from types import SimpleNamespace
-    import app.main as main
+    import backend.app.main as main
     development_origins = main.cors_origins_for(SimpleNamespace(frontend_url="https://dashboard.example.com"), True)
     assert development_origins == {"https://dashboard.example.com"}
     assert main.cors_origins_for(SimpleNamespace(frontend_url="http://127.0.0.1:8000"), True) == set()
 
 
 def test_operational_reads_require_auth_outside_demo(client, monkeypatch):
-    import app.main as main
+    import backend.app.main as main
     monkeypatch.setattr(main.settings, "demo_mode", False)
     for route in ("/api/dashboard/summary", "/api/aircraft", "/api/crew", "/api/maintenance", "/api/schedules", "/api/alerts", "/api/activity", "/api/analytics/trends"):
         assert client.get(route).status_code == 401, route
@@ -109,7 +109,7 @@ def test_operational_reads_require_auth_outside_demo(client, monkeypatch):
 
 
 def test_production_rejects_sqlite_database(client, monkeypatch):
-    import app.main as main
+    import backend.app.main as main
     monkeypatch.setattr(main.settings, "app_env", "production")
     monkeypatch.setattr(main.settings, "demo_mode", False)
     monkeypatch.setattr(main.settings, "jwt_secret_key", "production-test-secret-with-at-least-thirty-two-characters")
@@ -118,7 +118,7 @@ def test_production_rejects_sqlite_database(client, monkeypatch):
 
 
 def test_production_requires_jwt_secret(client, monkeypatch):
-    import app.main as main
+    import backend.app.main as main
     monkeypatch.setattr(main.settings, "app_env", "production")
     monkeypatch.setattr(main.settings, "jwt_secret_key", "")
     with pytest.raises(RuntimeError, match="JWT_SECRET_KEY must be set"):
@@ -146,8 +146,8 @@ def test_role_protected_alert_write(client):
 
 
 def test_ai_rule_fallback_for_authenticated_viewer(client, monkeypatch):
-    import app.services as services
-    from app.config import get_settings
+    import backend.app.services as services
+    from backend.app.config import get_settings
     monkeypatch.setattr(services, "get_settings", lambda: get_settings().model_copy(update={"gemini_api_key":None}))
     registration = client.post("/api/auth/register", json={"email":"analysis@example.com", "password":"analysis-demo-passphrase"}).json()
     token = registration["data"]["access_token"]
@@ -163,8 +163,8 @@ def test_ai_rule_fallback_for_authenticated_viewer(client, monkeypatch):
 
 @pytest.mark.parametrize("question", ["hey", "heyy", "hello", "thanks"])
 def test_ai_greetings_and_thanks_skip_provider_and_dashboard_data(monkeypatch, question):
-    import app.services as services
-    from app.config import get_settings
+    import backend.app.services as services
+    from backend.app.config import get_settings
     from google import genai
 
     configured = get_settings().model_copy(update={"gemini_api_key":"configured-but-not-used"})
@@ -183,8 +183,8 @@ def test_ai_greetings_and_thanks_skip_provider_and_dashboard_data(monkeypatch, q
 
 
 def test_ai_empty_and_unrelated_messages_do_not_trigger_dashboard_analysis(monkeypatch):
-    import app.services as services
-    from app.config import get_settings
+    import backend.app.services as services
+    from backend.app.config import get_settings
 
     settings = get_settings().model_copy(update={"gemini_api_key":None})
     monkeypatch.setattr(services, "get_settings", lambda: settings)
@@ -200,7 +200,7 @@ def test_ai_empty_and_unrelated_messages_do_not_trigger_dashboard_analysis(monke
 
 
 def test_ai_non_analysis_api_messages_do_not_build_dashboard_snapshot(client, monkeypatch):
-    import app.main as main
+    import backend.app.main as main
     user = client.post("/api/auth/register", json={"email":"greeting@example.com", "password":"greeting-test-passphrase"}).json()["data"]
     headers = {"Authorization":f"Bearer {user['access_token']}"}
 
@@ -216,8 +216,8 @@ def test_ai_non_analysis_api_messages_do_not_build_dashboard_snapshot(client, mo
 
 
 def test_gemini_success_uses_snapshot_and_has_accurate_provider_label(monkeypatch):
-    import app.services as services
-    from app.config import get_settings
+    import backend.app.services as services
+    from backend.app.config import get_settings
     from google import genai
 
     captured = {}
@@ -246,8 +246,8 @@ def test_gemini_success_uses_snapshot_and_has_accurate_provider_label(monkeypatc
 @pytest.mark.parametrize("failure", ["connect", "timeout"])
 def test_weather_provider_failure_does_not_use_persisted_demo_rows(monkeypatch, failure):
     import httpx
-    import app.services as services
-    from app.models import WeatherObservation
+    import backend.app.services as services
+    from backend.app.models import WeatherObservation
 
     class OfflineClient:
         async def __aenter__(self): return self
@@ -276,8 +276,8 @@ def test_weather_provider_failure_does_not_use_persisted_demo_rows(monkeypatch, 
     {"time": ["2026-10-11T12:00"], "temperature_2m": []},
 ])
 def test_weather_invalid_provider_payload_is_unavailable_not_live(monkeypatch, hourly):
-    import app.services as services
-    from app.models import WeatherObservation
+    import backend.app.services as services
+    from backend.app.models import WeatherObservation
 
     class ProviderResponse:
         def raise_for_status(self): pass
@@ -303,8 +303,8 @@ def test_weather_invalid_provider_payload_is_unavailable_not_live(monkeypatch, h
 
 
 def test_gemini_provider_error_uses_rule_fallback(monkeypatch):
-    from app.config import get_settings
-    import app.services as services
+    from backend.app.config import get_settings
+    import backend.app.services as services
     from google import genai
 
     class BrokenModels:
@@ -363,7 +363,7 @@ def test_authorized_crud_and_schedule_conflict(client):
     assert report.status_code == 201
     assert "confirmed readiness" in report.json()["data"]["summary"]
     assert len(client.get("/api/reports", headers=headers).json()["data"]) == 1
-    from app.security import create_access_token
+    from backend.app.security import create_access_token
     with SessionLocal() as db:
         viewer_profile = Profile(email="report-viewer@example.com", password_hash="test-only", role="viewer")
         db.add(viewer_profile)
@@ -379,7 +379,7 @@ def test_authorized_crud_and_schedule_conflict(client):
 
 
 def test_list_routes_and_weather_failure_shape(client, monkeypatch):
-    import app.main as main
+    import backend.app.main as main
 
     async def weather_offline(latitude, longitude, db):
         return {"source":"unavailable", "is_demo":False, "stale":False,
@@ -414,8 +414,8 @@ def test_list_routes_and_weather_failure_shape(client, monkeypatch):
 
 
 def test_graph_source_separation_provenance_and_migration_preservation(client):
-    from app.models import WeatherObservation
-    from app.config import get_settings
+    from backend.app.models import WeatherObservation
+    from backend.app.config import get_settings
     now = datetime.now(timezone.utc)
     with SessionLocal() as db:
         demo_before = db.query(WeatherObservation).filter_by(source="demo").count()
@@ -457,7 +457,7 @@ def test_graph_source_separation_provenance_and_migration_preservation(client):
 
 
 def test_operational_metric_formulas_unknown_statuses_duplicates_and_empty_data():
-    from app.services import calculate_operational_metrics
+    from backend.app.services import calculate_operational_metrics
 
     t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
     aircraft = [
@@ -494,7 +494,7 @@ def test_operational_metric_formulas_unknown_statuses_duplicates_and_empty_data(
 
 def test_normalized_business_ids_have_database_uniqueness_indexes():
     from sqlalchemy.exc import IntegrityError
-    from app.models import Aircraft, Crew
+    from backend.app.models import Aircraft, Crew
 
     now = datetime.now(timezone.utc)
     with SessionLocal() as db:
@@ -516,7 +516,7 @@ def test_normalized_business_ids_have_database_uniqueness_indexes():
 
 def test_weather_provider_points_have_database_deduplication_constraint():
     from sqlalchemy.exc import IntegrityError
-    from app.models import WeatherObservation
+    from backend.app.models import WeatherObservation
 
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     with SessionLocal() as db:
@@ -532,8 +532,8 @@ def test_weather_provider_points_have_database_deduplication_constraint():
 
 
 def test_public_inventory_import_is_idempotent_and_excludes_procurement(client):
-    from app.inventory import import_inventory, inventory_summary, load_dataset
-    from app.models import PublicInventoryRecord
+    from backend.app.inventory import import_inventory, inventory_summary, load_dataset
+    from backend.app.models import PublicInventoryRecord
 
     dataset = load_dataset()
     with SessionLocal() as db:
@@ -558,8 +558,8 @@ def test_public_inventory_import_is_idempotent_and_excludes_procurement(client):
 
 
 def test_public_inventory_api_filters_and_attributes_source(client):
-    from app.inventory import import_inventory
-    from app.models import PublicInventoryRecord
+    from backend.app.inventory import import_inventory
+    from backend.app.models import PublicInventoryRecord
 
     with SessionLocal() as db:
         import_inventory(db)

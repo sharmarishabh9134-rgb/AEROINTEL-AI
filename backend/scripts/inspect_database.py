@@ -4,8 +4,8 @@ from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, Integer, Nume
 from sqlalchemy.exc import SAWarning
 import warnings
 
-from app.database import engine
-from app.models import Base
+from backend.app.database import engine
+from backend.app.models import Base
 
 
 def type_family(value):

@@ -12,14 +12,19 @@ from fastapi.responses import Response
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
-from app.config import get_settings
-from app.database import Base, engine, get_db
-from app.models import (Aircraft, Alert, AnalysisReport, AuditLog, Crew, MaintenanceRecord, Profile, PublicInventoryRecord, ScheduleRecord, WeatherObservation)
-from app.schemas import (AlertCreate, AircraftInput, AircraftUpdate, AnalyzeInput, CrewInput, CrewUpdate, LoginInput, MaintenanceInput, MaintenanceUpdate, ReportCreate, ScheduleInput, ScheduleUpdate, UserCreate, UserOut)
-from app.security import bearer, create_access_token, current_user, get_jwt_secret, password_hash, require_roles
-from app.seed import seed_demo_data
-from app.services import analyze, classify_analyzer_intent, dashboard_summary, fetch_weather, rows_as_dict, trend_series
-from app.inventory import filtered_inventory, inventory_summary, load_dataset
+from backend.app.config import get_settings
+from backend.app.database import Base, engine, get_db
+from backend.app.models import (Aircraft, Alert, AnalysisReport, AuditLog, Crew, MaintenanceRecord, Profile, PublicInventoryRecord, ScheduleRecord, WeatherObservation)
+from backend.app.schemas import (AlertCreate, AircraftInput, AircraftUpdate, AnalyzeInput, CrewInput, CrewUpdate, LoginInput, MaintenanceInput, MaintenanceUpdate, ReportCreate, ScheduleInput, ScheduleUpdate, UserCreate, UserOut)
+from backend.app.security import bearer, create_access_token, current_user, get_jwt_secret, password_hash, require_roles
+from backend.app.seed import seed_demo_data
+from backend.app.services import analyze, classify_analyzer_intent, dashboard_summary, fetch_weather, rows_as_dict, trend_series
+from backend.app.inventory import filtered_inventory, inventory_summary, load_dataset
+from backend.app.ml_analytics import (NOTICE as ML_NOTICE, assistant_results as ml_assistant_results,
+                                      dataset_summary as ml_dataset_summary,
+                                      evaluation_metrics as ml_evaluation_metrics,
+                                      model_status as ml_model_status, predict as ml_predict)
+from backend.app.schemas import MaintenanceDemoPrediction
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("aerointel")
@@ -173,7 +178,7 @@ async def database_error_handler(request: Request, exc: SQLAlchemyError):
 
 @app.get("/", include_in_schema=False)
 def home():
-    path = Path(__file__).resolve().parents[1] / "index.html"
+    path = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Dashboard file not found")
     return FileResponse(path)
@@ -523,8 +528,90 @@ def activity(limit: int = Query(10, ge=1, le=50), _profile: Profile | None = Dep
     return {"data": rows_as_dict(rows)}
 
 
+def _ml_dataset_summary():
+    try:
+        return ml_dataset_summary()
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Maintenance demo dataset is unavailable or invalid.") from exc
+
+
+@app.get("/api/ml/status")
+def ml_status(_profile: Profile | None = Depends(operational_read_access)):
+    return {"data": ml_model_status(), "notice": ML_NOTICE}
+
+
+@app.get("/api/ml/dataset-summary")
+def ml_summary(_profile: Profile | None = Depends(operational_read_access)):
+    return {"data": _ml_dataset_summary(), "notice": ML_NOTICE}
+
+
+@app.get("/api/ml/evaluation")
+def ml_evaluation(_profile: Profile | None = Depends(operational_read_access)):
+    try:
+        return {"data": ml_evaluation_metrics(), "notice": ML_NOTICE}
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Model evaluation is unavailable.") from exc
+
+
+@app.post("/api/ml/predict")
+def ml_demo_prediction(payload: MaintenanceDemoPrediction,
+                       _profile: Profile | None = Depends(operational_read_access)):
+    try:
+        return {"data": ml_predict(payload.model_dump()), "notice": ML_NOTICE}
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Demo prediction is unavailable.") from exc
+
+
+def _ml_question(question: str | None) -> bool:
+    import re
+    return bool(re.search(r"\b(?:machine learning|ml analytics|model|prediction|predictions|dataset|"
+                          r"class distribution|accuracy|precision|recall|f1|confusion matrix)\b",
+                          (question or "").lower()))
+
+
+def _ml_assistant_response(results: dict) -> dict:
+    dataset, status, evaluation = results["dataset"], results["status"], results.get("evaluation")
+    facts = [
+        {"label": "ML model status", "value": status["status"],
+         "basis": "Status read from the backend model artifact and checked against the supplied dataset hash."},
+        {"label": "Synthetic dataset rows", "value": str(dataset["rows"]),
+         "basis": "Row count loaded from the validated aircraft maintenance demo CSV."},
+        {"label": "Class distribution", "value": ", ".join(f"{k}: {v}" for k, v in dataset["class_distribution"].items()),
+         "basis": "Backend counts by demo target label in the supplied dataset."},
+    ]
+    if evaluation:
+        facts.extend([
+            {"label": "Holdout accuracy", "value": f"{evaluation['accuracy']:.4f}",
+             "basis": evaluation["evaluation_basis"]},
+            {"label": "Macro precision / recall / F1",
+             "value": " / ".join(f"{evaluation['macro_avg'][k]:.4f}" for k in ("precision", "recall", "f1-score")),
+             "basis": evaluation["evaluation_basis"]},
+        ])
+    return {
+        "intent": "analysis",
+        "summary": ("Verified backend ML results are listed below. " +
+                    ("The model has not been trained for this dataset yet." if not status["available"] else
+                     "Evaluation values are calculated from the fixed holdout set.")),
+        "calculated_data": facts, "interpretation": None, "recommendations": [],
+        "limitations": ML_NOTICE + ". The classifier output and evaluation apply only to this synthetic demonstration dataset.",
+        "source": "ml-backend", "source_label": "Backend ML analytics",
+        "provider": {"name": "Gemini", "configured": bool(settings.gemini_api_key), "used": False},
+        "ai_generated": False, "verified": True, "ml_analytics_included": True,
+        "ml_notice": ML_NOTICE, "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.post("/api/ai/analyze")
 async def ai_analyze(payload: AnalyzeInput, profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
+    if _ml_question(payload.question):
+        try:
+            return {"data": _ml_assistant_response(ml_assistant_results())}
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail="Verified ML results are unavailable.") from exc
     intent = classify_analyzer_intent(payload.question)
     if intent != "analysis":
         return {"data": await analyze({}, payload.question)}

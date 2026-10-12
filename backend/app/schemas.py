@@ -130,6 +130,26 @@ class AnalyzeInput(BaseModel):
     question: str | None = Field(default=None, max_length=1000)
 
 
+class MaintenanceDemoPrediction(BaseModel):
+    aircraft_category: str = Field(min_length=2, max_length=60)
+    propulsion_type: str = Field(min_length=2, max_length=40)
+    aircraft_age_years: float = Field(ge=0, le=100)
+    total_flight_hours: float = Field(ge=0, le=200_000)
+    total_cycles: float = Field(ge=0, le=250_000)
+    days_since_last_maintenance: float = Field(ge=0, le=3_650)
+    maintenance_events_last_12_months: int = Field(ge=0, le=100)
+    unresolved_maintenance_items: int = Field(ge=0, le=100)
+    inspection_overdue_flag: bool
+
+    @field_validator("aircraft_category", "propulsion_type")
+    @classmethod
+    def strip_prediction_categories(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value must not be blank")
+        return value
+
+
 class WeatherQuery(BaseModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)

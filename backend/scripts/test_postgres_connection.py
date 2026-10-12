@@ -4,9 +4,9 @@ import uuid
 
 from sqlalchemy import inspect, text
 
-from app.config import get_settings
-from app.database import engine
-from app.models import Base
+from backend.app.config import get_settings
+from backend.app.database import engine
+from backend.app.models import Base
 
 
 def main() -> int:

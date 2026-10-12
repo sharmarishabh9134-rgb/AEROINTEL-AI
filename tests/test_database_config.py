@@ -1,8 +1,8 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.config import Settings
-from app.database import make_engine
+from backend.app.config import Settings
+from backend.app.database import make_engine
 
 
 def test_local_default_remains_sqlite(monkeypatch):

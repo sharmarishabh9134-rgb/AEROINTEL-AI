@@ -1,5 +1,5 @@
-from app.database import Base, SessionLocal, engine
-from app.seed import seed_demo_data
+from backend.app.database import Base, SessionLocal, engine
+from backend.app.seed import seed_demo_data
 
 Base.metadata.create_all(bind=engine)
 with SessionLocal() as session:

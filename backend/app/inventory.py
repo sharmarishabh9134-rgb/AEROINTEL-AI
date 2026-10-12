@@ -6,9 +6,9 @@ from pathlib import Path
 import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from app.models import PublicInventoryRecord
+from backend.app.models import PublicInventoryRecord
 
-DATASET_PATH = Path(__file__).resolve().parents[1] / "data" / "india_military_aircraft_2026_10_10.json"
+DATASET_PATH = Path(__file__).resolve().parents[2] / "data" / "india_military_aircraft_2026_10_10.json"
 ORGANIZATIONS = ("Indian Air Force", "Indian Army Aviation", "Indian Navy Aviation")
 
 

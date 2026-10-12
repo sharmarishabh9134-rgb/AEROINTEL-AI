@@ -1,6 +1,10 @@
+from pathlib import Path
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from app.config import get_settings
+from backend.app.config import get_settings
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Base(DeclarativeBase):
@@ -11,6 +15,13 @@ def make_engine(url: str):
     url = url.strip()
     if not url:
         raise ValueError("DATABASE_URL must not be empty")
+
+    parsed_url = make_url(url)
+    if parsed_url.get_backend_name() == "sqlite" and parsed_url.database and parsed_url.database != ":memory:":
+        database_path = Path(parsed_url.database)
+        if not database_path.is_absolute():
+            parsed_url = parsed_url.set(database=str((PROJECT_ROOT / database_path).resolve()))
+            url = parsed_url.render_as_string(hide_password=False)
 
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+psycopg://", 1)

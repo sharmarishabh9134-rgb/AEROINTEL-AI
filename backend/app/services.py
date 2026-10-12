@@ -10,8 +10,8 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from app.config import get_settings
-from app.models import Aircraft, Alert, Crew, MaintenanceRecord, ScheduleRecord, WeatherObservation
+from backend.app.config import get_settings
+from backend.app.models import Aircraft, Alert, Crew, MaintenanceRecord, ScheduleRecord, WeatherObservation
 
 logger = logging.getLogger("aerointel")
 _weather_cache: dict[tuple[float, float], tuple[float, dict[str, Any]]] = {}
@@ -348,7 +348,9 @@ def classify_analyzer_intent(question: str | None) -> str:
     dashboard_terms = re.compile(
         r"\b(?:dashboard|snapshot|overview|aircraft|availability|available|standby|"
         r"readiness|ready|crew|maintenance|alert|alerts|schedule|weather|inventory|"
-        r"resource|utilization|database|records?|metrics?|data|source|open issues?)\b"
+        r"resource|utilization|database|records?|metrics?|data|source|open issues?|"
+        r"machine learning|ml analytics|model|prediction|predictions|dataset|class distribution|"
+        r"accuracy|precision|recall|f1|confusion matrix)\b"
     )
     if dashboard_terms.search(remainder):
         return "analysis"

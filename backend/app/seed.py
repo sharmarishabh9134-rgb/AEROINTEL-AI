@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from app.models import Aircraft, Crew, MaintenanceRecord, ScheduleRecord, Alert, WeatherObservation, AuditLog
+from backend.app.models import Aircraft, Crew, MaintenanceRecord, ScheduleRecord, Alert, WeatherObservation, AuditLog
 
 
 def seed_demo_data(db: Session) -> None:
