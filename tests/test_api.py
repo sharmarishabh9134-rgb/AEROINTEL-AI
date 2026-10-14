@@ -575,3 +575,71 @@ def test_public_inventory_api_filters_and_attributes_source(client):
     assert body["meta"]["source_date"].startswith("2026-10-10")
     assert "conflicts with the supplied service-level breakdown" in body["meta"]["source_note"]
     assert "not official operational readiness" in body["meta"]["notice"]
+
+
+def test_ml_endpoints_expose_validated_synthetic_results(client):
+    import backend.app.main as main
+
+    status = client.get("/api/ml/status")
+    summary = client.get("/api/ml/dataset-summary")
+    assert status.status_code == summary.status_code == 200
+    assert status.json()["notice"] == "SYNTHETIC DEMO DATA — NOT FOR OPERATIONAL USE"
+    assert summary.json()["data"]["rows"] == 150
+    assert summary.json()["data"]["class_distribution"] == {"Low": 56, "Medium": 75, "High": 19}
+    assert client.get("/api/ml/evaluation").status_code == (200 if status.json()["data"]["available"] else 503)
+
+    invalid = client.post("/api/ml/predict", json={"aircraft_category": "Transport"})
+    assert invalid.status_code == 422
+    payload = {
+        "aircraft_category": "Transport", "propulsion_type": "Jet", "aircraft_age_years": 12,
+        "total_flight_hours": 4200, "total_cycles": 2300, "days_since_last_maintenance": 45,
+        "maintenance_events_last_12_months": 2, "unresolved_maintenance_items": 0,
+        "inspection_overdue_flag": False,
+    }
+    prediction = client.post("/api/ml/predict", json=payload)
+    assert prediction.status_code == (200 if status.json()["data"]["available"] else 503)
+    if prediction.status_code == 200:
+        assert prediction.json()["data"]["predicted_demo_label"] in {"Low", "Medium", "High"}
+        assert prediction.json()["data"]["notice"] == "SYNTHETIC DEMO DATA — NOT FOR OPERATIONAL USE"
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(main.settings, "demo_mode", False)
+    try:
+        for route in ("/api/ml/status", "/api/ml/dataset-summary", "/api/ml/evaluation"):
+            assert client.get(route).status_code == 401
+    finally:
+        monkeypatch.undo()
+
+
+def test_ai_ml_questions_use_verified_backend_results_only(client, monkeypatch):
+    import backend.app.main as main
+
+    registration = client.post("/api/auth/register", json={
+        "email": "ml-assistant@example.com", "password": "ml-assistant-test-passphrase",
+    })
+    assert registration.status_code == 201
+    headers = {"Authorization": f"Bearer {registration.json()['data']['access_token']}"}
+
+    async def unexpected_provider_call(*_args, **_kwargs):
+        raise AssertionError("ML questions must not pass unverified content to the AI provider")
+
+    monkeypatch.setattr(main, "analyze", unexpected_provider_call)
+    response = client.post("/api/ai/analyze", headers=headers,
+                          json={"question": "What are the model accuracy and class distribution?",
+                                "context": {"accuracy": 1.0, "class_distribution": {"fake": 999}}})
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["source"] == "ml-backend"
+    assert data["verified"] is True
+    assert data["provider"]["used"] is False
+    assert data["ml_notice"] == "SYNTHETIC DEMO DATA — NOT FOR OPERATIONAL USE"
+    assert any(item["value"] != "1.0" for item in data["calculated_data"])
+    assert data["recommendations"] == []
+
+
+def test_ml_analytics_page_and_warning_are_in_dashboard(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "ML Analytics" in response.text
+    assert "SYNTHETIC DEMO DATA — NOT FOR OPERATIONAL USE" in response.text
+    assert "/api/ml/evaluation" in response.text

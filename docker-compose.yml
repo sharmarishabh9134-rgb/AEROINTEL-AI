@@ -1,0 +1,22 @@
+services:
+  api:
+    build: .
+    ports:
+      - "${PORT:-7860}:${PORT:-7860}"
+    environment:
+      PORT: ${PORT:-7860}
+      APP_ENV: development
+      DEMO_MODE: "true"
+      DATABASE_URL: sqlite:////app/state/aerointel_demo.db
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      RAG_PROVIDER: ${RAG_PROVIDER:-local}
+      OLLAMA_URL: http://ollama:11434/api/generate
+    volumes: ["aero-db:/app/state"]
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    ports: ["11434:11434"]
+    volumes: ["ollama-data:/root/.ollama"]
+volumes:
+  aero-db:
+  ollama-data:

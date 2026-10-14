@@ -14,3 +14,5 @@ numpy==2.3.4
 scikit-learn==1.7.2
 joblib==1.5.2
 pytest==8.4.2
+ortools>=9.10,<10
+shap>=0.46,<1

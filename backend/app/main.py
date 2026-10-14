@@ -25,6 +25,7 @@ from backend.app.ml_analytics import (NOTICE as ML_NOTICE, assistant_results as 
                                       evaluation_metrics as ml_evaluation_metrics,
                                       model_status as ml_model_status, predict as ml_predict)
 from backend.app.schemas import MaintenanceDemoPrediction
+from backend.app.fleet_intelligence import router as fleet_intelligence_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("aerointel")
@@ -149,6 +150,7 @@ def cors_origins_for(config, production: bool) -> set[str]:
 
 origins = cors_origins_for(settings, is_production)
 app.add_middleware(CORSMiddleware, allow_origins=sorted(origins), allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"], allow_headers=["Authorization", "Content-Type"])
+app.include_router(fleet_intelligence_router)
 
 _attempts: dict[str, deque[float]] = defaultdict(deque)
 
@@ -181,6 +183,14 @@ def home():
     path = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Dashboard file not found")
+    return FileResponse(path)
+
+
+@app.get("/fleet", include_in_schema=False)
+def fleet_dashboard():
+    path = Path(__file__).resolve().parents[2] / "frontend" / "fleet.html"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Fleet dashboard file not found")
     return FileResponse(path)
 
 

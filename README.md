@@ -1,8 +1,37 @@
+---
+title: AEROINTEL AI
+emoji: ✈️
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+---
+
 # AEROINTEL AI
 
 The responsive dashboard is served by a FastAPI backend. Read-only dashboard data is fictional and marked as demo data. The default backend stores records in a local SQLite file at the repository root so the app works without external accounts. Run commands from the repository root; this keeps `.env` and relative SQLite paths anchored there. Configure `DATABASE_URL` with a Supabase PostgreSQL connection string to persist records there.
 
-The frontend is a single `frontend/index.html` served by the same FastAPI service. Its shared API client reads `window.AEROINTEL_CONFIG.apiBaseUrl`; `/api/client-config.js` supplies the server-configured `PUBLIC_API_BASE_URL`. Leave it blank for same-origin hosting. If you deploy `frontend/index.html` on a separate static host, provide `window.AEROINTEL_CONFIG = { apiBaseUrl: "https://your-api-host" }` in that host's deployment configuration before the dashboard's API client starts, and set `FRONTEND_URL` on the API to the static site's origin. Keep credentials out of this browser configuration.
+The main dashboard (`frontend/index.html`) and fleet dashboard (`frontend/fleet.html`) are served by the same FastAPI service. The main dashboard API client reads `window.AEROINTEL_CONFIG.apiBaseUrl`; `/api/client-config.js` supplies `PUBLIC_API_BASE_URL`. Leave it blank for same-origin hosting. If you deploy a dashboard on a separate static host, provide its API base URL there and set `FRONTEND_URL` to that site's origin. Keep credentials out of browser configuration.
+
+## Deploy
+
+The one-service demo runs the FastAPI API and both dashboards on the same origin. Its container defaults to `APP_ENV=development`, `DEMO_MODE=true`, SQLite at `/app/state/aerointel_demo.db`, and port `7860`. It needs no Supabase or PostgreSQL service. Keep `FRONTEND_URL` and `PUBLIC_API_BASE_URL` blank for same-origin behavior; CORS is not needed for same-origin browser requests.
+
+### Hugging Face Spaces
+
+1. Create a Space and choose **Docker** as its SDK.
+2. Push this repository to the Space. The root `Dockerfile` serves port `7860`, and the README metadata configures the Space port.
+3. In Space settings, add a strong `JWT_SECRET_KEY`. If it is empty, the entrypoint generates a random key at startup and logs only that it generated one. The demo uses local SQLite and needs no database credentials.
+4. Open the Space URL. The dashboard is at `/`, the fleet view at `/fleet`, and health is at `/api/health`.
+
+### Render
+
+1. Create a **Web Service** from this repository and select the **Docker** runtime, using the root `Dockerfile`.
+2. Set the health check path to `/api/health`.
+3. Set `APP_ENV=development`, `DEMO_MODE=true`, `DATABASE_URL=sqlite:////app/state/aerointel_demo.db`, and a strong `JWT_SECRET_KEY` in the Render dashboard. Render supplies `PORT`; the image defaults it to `7860` for local and Spaces use.
+4. Leave `FRONTEND_URL` and `PUBLIC_API_BASE_URL` blank when using the dashboard on the API's origin. No Supabase or PostgreSQL setup is needed for this demo.
+
+Free tiers may sleep while idle, so the first request after inactivity can have a cold start.
 
 ## Run locally
 
@@ -108,7 +137,7 @@ python -m backend.scripts.train_maintenance_model
 
 The generated `backend/models/maintenance_demo.joblib` is ignored by Git. The runtime verifies that its recorded dataset SHA-256 matches the current CSV; missing, invalid, or stale artifacts are reported as unavailable. APIs are `GET /api/ml/status`, `GET /api/ml/dataset-summary`, `GET /api/ml/evaluation`, and `POST /api/ml/predict`. Dashboard reads follow the same demo-mode/authentication policy as other operational reads. AI Decision Support retrieves ML results through backend functions and returns deterministic verified figures for ML questions; it does not pass those questions to Gemini or fabricate results. Its ML responses are explicitly marked as backend ML analytics.
 
-Vercel configuration runs the explicit training script at build time and includes the supplied CSV plus generated artifact in the Python function bundle. This project has not been deployed to Vercel; successful local verification does not confirm Vercel dependency or function bundle limits.
+The Docker image trains `maintenance_demo.joblib` from the supplied CSV at build time. This keeps the classifier available after deployment even though its generated local artifact is not tracked by Git.
 
 The AI Decision Analyzer routes greetings, thanks, empty input, and unrelated questions before loading the dashboard snapshot or calling Gemini. Relevant questions use a fresh backend-generated snapshot; client-provided metrics are ignored. Responses separate calculated fields and timestamps from optional interpretation and recommendations. Each response labels its source (`Gemini AI`, `Rule-based fallback`, or `Intent handler`) and reports whether Gemini was configured and actually used; no confidence score is generated.
 
@@ -141,30 +170,66 @@ The suite uses an isolated temporary SQLite database for API, auth/role, source 
 
 ## Render deployment
 
-- Build/install command: `pip install -r backend/requirements.txt`
-- Start command: `uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT`
-- Set `APP_ENV=production`, `DEMO_MODE=false`, `DATABASE_URL`, `JWT_SECRET_KEY`, and `FRONTEND_URL` in Render's environment settings. Set Gemini variables if needed. Never commit `.env` or credentials.
-- The same service serves `frontend/index.html` and `/api`, so the dashboard and API are same-origin. `FRONTEND_URL` adds the configured CORS origin for a separately hosted frontend.
-- Configure Render health check path as `/api/health`. Free plans may sleep when idle and can have cold starts or resource limits.
+- Use the Docker web service steps in [Deploy](#deploy). The root Dockerfile reads Render's `PORT`, and `/api/health` is the health check path.
 
-## Vercel deployment
+## Vercel not supported
 
-The app is a single FastAPI service: `backend/app/main.py` exports the `app` instance and serves both the dashboard and `/api` routes. The root `pyproject.toml` points Vercel to `backend.app.main:app`, and `vercel.json` installs `backend/requirements.txt` and bundles `frontend/index.html` plus the versioned `data/**/*.json` file. No frontend build step is required. The Vercel settings are prepared for the relocated app, but have not been validated by a deployment.
-
-Vercel Functions provide an ephemeral, read-only application filesystem, so production must use PostgreSQL; the default `aerointel_demo.db` SQLite database is for local development only. The Python function bundle must also remain within Vercel's size limits. Before deployment, configure a persistent PostgreSQL database, review its current schema with `python -m backend.scripts.inspect_database`, and apply only the migrations required for that schema. Production startup checks tables, columns, and indexes and does not run migrations or seed demo data. Follow the Supabase PostgreSQL procedure above if Supabase is the chosen database; no Supabase connection is currently configured in this project folder.
-
-From this project directory, install and link the Vercel CLI, then configure environment variables in the Vercel project settings before the first deployment:
-
-```powershell
-npm install --global vercel
-vercel login
-vercel link
-```
-
-Set `APP_ENV=production`, `DEMO_MODE=false`, `DATABASE_URL` to the persistent PostgreSQL connection string, and `JWT_SECRET_KEY` to a random secret of at least 32 characters. Use a connection URL and database role appropriate for application traffic; do not use a Supabase service-role key as the database password. `FRONTEND_URL` is only needed when the dashboard is hosted on a different origin; the bundled dashboard and API are same-origin. Set `GEMINI_API_KEY` only if Gemini model responses are required. Configure the Open-Meteo coordinates and location for the intended region; no Open-Meteo API key is required. Never add secrets to browser configuration or commit them.
-
-Use the linked project to create and inspect a preview deployment, then deploy to production only after checking `/`, `/api/health`, registration/login, protected APIs, reports, the public inventory screen, and live weather. The CLI commands are `vercel` for a preview and `vercel --prod` for production. Do not run `vercel --prod` until the database and environment variables are ready and the preview checks pass.
+Vercel is not a deployment target for this application. The Python dependency bundle is approximately 577 MB, exceeding the intended function bundle size; use the Docker deployment on Hugging Face Spaces or Render instead.
 
 ## Credential rotation
 
-If a credential was previously exposed, revoke/rotate it in its provider dashboard, update the deployment environment, and remove it from Git history as appropriate. This repository contains placeholders only.
+Never commit `.env` or include it in a ZIP/archive. Keep real credentials in the deployment dashboard or ignored local environment file. If a credential was previously exposed, revoke/rotate it in its provider dashboard, update the deployment environment, and remove it from Git history as appropriate.
+# Fleet Intelligence extension
+
+The existing AEROINTEL application now includes a fictional fleet intelligence demo at `/fleet` and a FastAPI extension for snag mapping, fleet graph queries, planning, prediction, and maintenance copilot retrieval. Sample work orders, depots, spares, manuals, aircraft and snags are synthetic and must not be treated as operational records.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  UI[React fleet dashboard] --> API[FastAPI]
+  UI <-->|WebSocket · 30s demo stream| API
+  API --> KG[Fleet graph and snag mapper]
+  API --> PLAN[Maintenance planning and spares]
+  API --> RAG[TF-IDF retrieval and cited answers]
+  API --> ML[FD001 preprocessing and prognostics]
+  ML --> DATA[(NASA C-MAPSS FD001 files)]
+  API --> DB[(PostgreSQL or local SQLite)]
+  API --> AUDIT[JWT roles and audit log]
+```
+
+## Quick demo
+
+Run `make demo` (or `docker compose up --build`) and open [http://localhost:8000/fleet](http://localhost:8000/fleet). The existing dashboard remains at `/`. In local demo mode the synthetic graph and planning endpoints are open; registration and role-protected existing operations continue to use the existing JWT login flow.
+
+`python -m backend.scripts.show_snag_mappings` prints five noisy snag mappings and similarity scores. `python -m backend.scripts.simulate_maintenance` prints deterministic before/after fictional availability and AOG KPIs.
+
+## FD001 training and evaluation
+
+To download and train from PowerShell in the repository root:
+
+```powershell
+New-Item -ItemType Directory -Force data/CMAPSSData
+Invoke-WebRequest -Uri https://data.nasa.gov/docs/legacy/CMAPSSData.zip -OutFile data/CMAPSSData.zip
+Expand-Archive -Path data/CMAPSSData.zip -DestinationPath data/CMAPSSData -Force
+python -m backend.scripts.train_fd001
+```
+
+The loader validates the 26-column sensor format; preprocessing smooths each unit's sensor streams and flags abrupt changes. Training saves `backend/models/fd001_prognostics.joblib` and prints test-set RMSE and the asymmetric NASA score. The API reports the saved metrics at `/predict/metrics`; `/predict/rul` and `/predict/anomaly` accept JSON shaped as `{"sensors":{"sensor_01":0.0}}` and return intervals and the top three sensor attributions. Intervals are empirical calibration bands. SHAP is used when its installed explainer supports the fitted tree; a standardized-deviation attribution is the fallback.
+
+The official catalog ZIP is available from the [NASA C-MAPSS dataset record](https://catalog.data.gov/dataset/cmapss-jet-engine-simulated-data). FD001 training completed on the official train/test/RUL files: **RMSE 18.51 cycles**, **NASA score 1,048.52**, over **100 test engines**. The compact trained artifact is saved at `backend/models/fd001_prognostics.joblib` and tracked by Git; the downloaded raw data remains git-ignored. Missing data produces a clear error rather than substituting synthetic records.
+
+## API highlights
+
+- `GET /graph/aircraft/{id}` returns the tail, components, snags, work orders, and spares in the demo graph.
+- `POST /planning/expected-aog-days`, `/planning/bundle`, and `/planning/what-if` calculate demo planning scenarios. Bundling uses OR-Tools CP-SAT when installed and a priority-aware fallback otherwise.
+- `GET /planning/spares` returns low-stock recommendations.
+- `POST /copilot/ask` returns a context answer, source IDs, and similar cases. `RAG_PROVIDER=local` uses local TF-IDF retrieval; `ollama` uses `OLLAMA_URL` and `OLLAMA_MODEL`; `api` uses `RAG_API_URL`, `RAG_API_KEY`, and `RAG_API_MODEL`.
+- `GET /copilot/evaluation` runs a fixed set of 15 retrieval questions.
+- `WS /ws/fleet` streams fleet refreshes and a rotating synthetic fault every 30 seconds in demo mode.
+
+## Roles, audit, and compose
+
+The dashboard reflects the existing `viewer`, `analyst`, and `admin` roles. Existing authentication uses JWT; successful prediction, copilot, and scenario calls write audit events for authenticated users. Set `JWT_SECRET_KEY` in `.env` before deployment. Docker Compose uses a persistent SQLite database for the safe local demo; configured PostgreSQL remains available for deployments through `DATABASE_URL`. Start the optional Ollama service with `docker compose --profile local-llm up --build` and set `RAG_PROVIDER=ollama` to use it.
+
+Run the requested suite with `python -m pytest -q`.
