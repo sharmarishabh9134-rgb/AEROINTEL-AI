@@ -243,6 +243,79 @@ def test_gemini_success_uses_snapshot_and_has_accurate_provider_label(monkeypatc
     assert "confidence" not in result
 
 
+def test_aircraft_count_question_leads_with_current_snapshot_values_and_provenance(monkeypatch):
+    import backend.app.services as services
+    from backend.app.config import get_settings
+
+    monkeypatch.setattr(services, "get_settings", lambda: get_settings().model_copy(update={"gemini_api_key":None}))
+    snapshot = {
+        "aircraft_total": 7,
+        "readiness_pct": 75,
+        "availability_pct": 67,
+        "meta": {"generated_at": "2026-10-17T10:00:00Z"},
+        "metric_basis": {
+            "aircraft_total": {"basis": "unique aircraft records from current query"},
+            "readiness_pct": {"numerator": 3, "denominator": 4, "basis": "explicit confirmation booleans"},
+            "availability_pct": {"numerator": 2, "denominator": 3, "basis": "recognized availability statuses"},
+        },
+    }
+
+    result = asyncio.run(services.analyze(snapshot, "How many aircraft do I have?"))
+    assert result["summary"] == (
+        "You have 7 aircraft records in the current dashboard snapshot. "
+        "3 aircraft are readiness-confirmed (75%), and 2 aircraft are marked available (67%)."
+    )
+    assert result["source_label"] == "Rule-based fallback"
+    assert result["provider"]["used"] is False
+    aircraft_fact = result["calculated_data"][0]
+    assert aircraft_fact["label"] == "Aircraft records"
+    assert aircraft_fact["value"] == "7"
+    assert aircraft_fact["basis"] == "unique aircraft records from current query"
+    assert aircraft_fact["timestamp"] == snapshot["meta"]["generated_at"]
+
+
+@pytest.mark.parametrize(("question", "metric", "expected"), [
+    ("How many aircraft are available?", "availability_pct", "2 aircraft are marked available (67%)."),
+    ("How many aircraft have readiness confirmation?", "readiness_pct", "3 aircraft are readiness-confirmed (75%)."),
+])
+def test_aircraft_availability_and_readiness_questions_answer_directly(monkeypatch, question, metric, expected):
+    import backend.app.services as services
+    from backend.app.config import get_settings
+
+    monkeypatch.setattr(services, "get_settings", lambda: get_settings().model_copy(update={"gemini_api_key":None}))
+    snapshot = {
+        "aircraft_total": 7,
+        "availability_pct": 67,
+        "readiness_pct": 75,
+        "metric_basis": {
+            "availability_pct": {"numerator": 2, "denominator": 3, "basis": "recognized status"},
+            "readiness_pct": {"numerator": 3, "denominator": 4, "basis": "explicit confirmation"},
+        },
+    }
+    result = asyncio.run(services.analyze(snapshot, question))
+    assert result["summary"] == expected
+    assert result["source"] == "rules-fallback"
+    assert result["provider"]["used"] is False
+    assert any(fact["label"] == ("Aircraft availability" if metric == "availability_pct"
+                                  else "Aircraft readiness confirmation") for fact in result["calculated_data"])
+
+
+def test_aircraft_questions_report_missing_snapshot_data_without_inventing_values(monkeypatch):
+    import backend.app.services as services
+    from backend.app.config import get_settings
+
+    monkeypatch.setattr(services, "get_settings", lambda: get_settings().model_copy(update={"gemini_api_key":None}))
+    result = asyncio.run(services.analyze({"meta": {"generated_at": "2026-10-17T10:00:00Z"}},
+                                          "How many aircraft do I have?"))
+    assert result["summary"].startswith("The aircraft count is unavailable in the current dashboard snapshot")
+    assert "None" not in result["summary"]
+    assert "0 aircraft" not in result["summary"]
+    assert result["calculated_data"][0]["value"].startswith("Unavailable:")
+    assert "no valid records" in result["summary"]
+    assert result["source_label"] == "Rule-based fallback"
+    assert result["provider"]["used"] is False
+
+
 @pytest.mark.parametrize("failure", ["connect", "timeout"])
 def test_weather_provider_failure_does_not_use_persisted_demo_rows(monkeypatch, failure):
     import httpx

@@ -125,6 +125,7 @@ def calculate_operational_metrics(aircraft_records, crew_records) -> dict:
             "unknown_crew_status_records": len(crew) - known_crew_count,
         },
         "metric_basis": {
+            "aircraft_total": {"basis": "count of unique aircraft records in the current dashboard snapshot"},
             "readiness_pct": {"numerator": readiness_confirmed, "denominator": len(known_confirmations), "basis": "readiness_confirmation is true / records with an explicit boolean confirmation"},
             "availability_pct": {"numerator": status_counts["available"], "denominator": known_status_count, "basis": "available / unique aircraft with a recognized availability status"},
             "crew_readiness_pct": {"numerator": crew_status_counts["ready"], "denominator": known_crew_count, "basis": "ready crew / unique crew with a recognized readiness status"},
@@ -373,7 +374,14 @@ def _analysis_facts(context: dict) -> list[dict]:
     """Present calculations from the backend snapshot with their basis and time."""
     timestamp = context.get("meta", {}).get("generated_at")
     basis = context.get("metric_basis", {})
-    facts = []
+    aircraft_total = context.get("aircraft_total")
+    total_basis = basis.get("aircraft_total", {}).get("basis", "Count of unique aircraft records in the current backend dashboard snapshot.")
+    facts = [{
+        "label": "Aircraft records",
+        "value": "Unavailable: aircraft count was not supplied by the backend snapshot." if aircraft_total is None else str(aircraft_total),
+        "basis": total_basis,
+        "timestamp": timestamp,
+    }]
     for key, label in (("readiness_pct", "Aircraft readiness confirmation"),
                        ("availability_pct", "Aircraft availability"),
                        ("crew_readiness_pct", "Crew readiness")):
@@ -417,6 +425,42 @@ def _analysis_facts(context: dict) -> list[dict]:
     return facts
 
 
+def _metric_sentence(context: dict, key: str, metric_label: str) -> str:
+    """Render an aircraft metric only from its backend numerator and denominator."""
+    metric = context.get("metric_basis", {}).get(key, {})
+    numerator, denominator = metric.get("numerator"), metric.get("denominator")
+    percentage = context.get(key)
+    if numerator is None or denominator in (None, 0) or percentage is None:
+        return f"Aircraft {metric_label} data is unavailable because the snapshot has no valid records for that metric."
+    return f"{numerator} aircraft are {metric_label} ({percentage}%)."
+
+
+def _direct_aircraft_answer(context: dict, question: str | None) -> str | None:
+    """Answer simple aircraft questions before optional provider interpretation."""
+    text = (question or "").strip().lower()
+    if not re.search(r"\baircraft\b", text):
+        return None
+
+    asks_count = bool(re.search(r"\b(?:how many|number of|count|total)\b", text))
+    asks_availability = bool(re.search(r"\b(?:available|availability)\b", text))
+    asks_readiness = bool(re.search(r"\b(?:readiness|ready|confirmed|confirmation)\b", text))
+    total = context.get("aircraft_total")
+    if asks_count and not asks_availability and not asks_readiness:
+        first = (f"You have {total} aircraft records in the current dashboard snapshot."
+                 if total is not None else
+                 "The aircraft count is unavailable in the current dashboard snapshot because the backend did not provide it.")
+        readiness = _metric_sentence(context, "readiness_pct", "readiness-confirmed")
+        availability = _metric_sentence(context, "availability_pct", "marked available")
+        if "data is unavailable" in readiness or "data is unavailable" in availability:
+            return " ".join((first, readiness, availability))
+        return f"{first} {readiness[:-1]}, and {availability}"
+    if asks_availability:
+        return _metric_sentence(context, "availability_pct", "marked available")
+    if asks_readiness:
+        return _metric_sentence(context, "readiness_pct", "readiness-confirmed")
+    return None
+
+
 def _intent_response(intent: str, provider_configured: bool) -> dict:
     generated_at = datetime.now(timezone.utc).isoformat()
     messages = {
@@ -444,6 +488,7 @@ async def analyze(context: dict, question: str | None = None) -> dict:
         return _intent_response(intent, provider_configured)
 
     generated_at = datetime.now(timezone.utc).isoformat()
+    direct_answer = _direct_aircraft_answer(context, question)
     safe_context = json.dumps(context, ensure_ascii=True, default=str)[:12000]
     prompt = (
         "You are interpreting a current AEROINTEL administrative dashboard snapshot. It may contain fictional demo records. "
@@ -468,7 +513,7 @@ async def analyze(context: dict, question: str | None = None) -> dict:
                 raise ValueError("Unexpected analysis shape")
             return {
                 "intent": "analysis",
-                "summary": "Analysis uses the current backend dashboard snapshot.",
+                "summary": direct_answer or "Analysis uses the current backend dashboard snapshot.",
                 "calculated_data": _analysis_facts(context),
                 "interpretation": parsed["interpretation"],
                 "recommendations": parsed["recommendations"],
@@ -485,7 +530,7 @@ async def analyze(context: dict, question: str | None = None) -> dict:
         recommendations.append(f"Review the {context['alerts_open']} stored open alerts.")
     return {
         "intent": "analysis",
-        "summary": "Calculated values below come directly from the current backend dashboard snapshot.",
+        "summary": direct_answer or "Calculated values below come directly from the current backend dashboard snapshot.",
         "calculated_data": _analysis_facts(context),
         "interpretation": None,
         "recommendations": recommendations,

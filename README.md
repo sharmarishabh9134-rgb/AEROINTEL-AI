@@ -139,7 +139,7 @@ The generated `backend/models/maintenance_demo.joblib` is ignored by Git. The ru
 
 The Docker image trains `maintenance_demo.joblib` from the supplied CSV at build time. This keeps the classifier available after deployment even though its generated local artifact is not tracked by Git.
 
-The AI Decision Analyzer routes greetings, thanks, empty input, and unrelated questions before loading the dashboard snapshot or calling Gemini. Relevant questions use a fresh backend-generated snapshot; client-provided metrics are ignored. Responses separate calculated fields and timestamps from optional interpretation and recommendations. Each response labels its source (`Gemini AI`, `Rule-based fallback`, or `Intent handler`) and reports whether Gemini was configured and actually used; no confidence score is generated.
+The AI Decision Analyzer routes greetings, thanks, empty input, and unrelated questions before loading the dashboard snapshot or calling Gemini. Relevant questions use a fresh backend-generated snapshot; client-provided metrics are ignored. Simple aircraft count, availability, and readiness questions lead with a direct answer calculated from that snapshot, followed by the related metrics. Calculated values include their backend basis and snapshot timestamp in the response. Each response labels its source (`Gemini AI`, `Rule-based fallback`, or `Intent handler`) and reports whether Gemini was configured and actually used; a rule-based response never claims that Gemini was used. Missing snapshot values are reported as unavailable rather than inferred. No new configuration is required.
 
 ## Dashboard metric definitions
 
