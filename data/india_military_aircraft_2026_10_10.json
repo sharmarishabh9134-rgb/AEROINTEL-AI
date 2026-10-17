@@ -2,9 +2,9 @@
   "dataset_version": "2026-10-10.1",
   "country": "India",
   "source_date": "2026-10-10T00:00:00Z",
-  "source_name": "India Military Aviation Overview (user-supplied; open-source estimate)",
+  "source_name": "India Military Aviation Overview (user-supplied PDF; open-source estimate, compiled 2026-10-10)",
   "source_url": "https://www.globalmilitary.net/air_forces/ind/",
-  "source_note": "Retains the dated user-supplied rows. The referenced web page currently shows an aggregate of 2,353 aircraft for the Indian Air Force, which conflicts with the supplied service-level breakdown; verify source scope before adopting any later snapshot.",
+  "source_note": "The supplied report labels every figure an estimate, not official data. Detailed active model rows sum to 1,699 for the Air Force (reported approximately 1,700), 367 for Army Aviation, and 287 for Naval Aviation: 2,353 listed rows versus the rounded all-services estimate of approximately 2,350. The report does not provide individual aircraft registrations or live availability; it says no official public maintenance count is available. Procurement orders are excluded from active inventory.",
   "verification_status": "unverified_open_source_estimate",
   "data_classification": "ESTIMATE",
   "reported_approximate_totals": {
