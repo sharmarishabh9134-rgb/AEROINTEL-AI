@@ -1,15 +1,16 @@
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.responses import Response
-from sqlalchemy import inspect, select, text
+from sqlalchemy import func, inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from backend.app.config import get_settings
@@ -17,8 +18,9 @@ from backend.app.database import Base, engine, get_db
 from backend.app.models import (Aircraft, Alert, AnalysisReport, AuditLog, Crew, MaintenanceRecord, Profile, PublicInventoryRecord, ScheduleRecord, WeatherObservation)
 from backend.app.schemas import (AlertCreate, AircraftInput, AircraftUpdate, AnalyzeInput, CrewInput, CrewUpdate, LoginInput, MaintenanceInput, MaintenanceUpdate, ReportCreate, ScheduleInput, ScheduleUpdate, UserCreate, UserOut)
 from backend.app.security import bearer, create_access_token, current_user, get_jwt_secret, password_hash, require_roles
-from backend.app.services import analyze, classify_analyzer_intent, dashboard_summary, fetch_weather, rows_as_dict, trend_series
+from backend.app.services import analyze, calculate_operational_metrics, classify_analyzer_intent, dashboard_summary, fetch_weather, rows_as_dict, trend_series
 from backend.app.inventory import filtered_inventory, import_inventory, inventory_summary, load_dataset
+from backend.app.official_disclosures import filtered_official_disclosures, load_official_disclosures
 from backend.app.seed import remove_seeded_demo_data, seed_demo_data
 from backend.app.ml_analytics import (NOTICE as ML_NOTICE, assistant_results as ml_assistant_results,
                                       dataset_summary as ml_dataset_summary,
@@ -26,6 +28,7 @@ from backend.app.ml_analytics import (NOTICE as ML_NOTICE, assistant_results as 
                                       model_status as ml_model_status, predict as ml_predict)
 from backend.app.schemas import MaintenanceDemoPrediction
 from backend.app.fleet_intelligence import router as fleet_intelligence_router
+from backend.app.aviation_public_data import fetch_public_aviation_data
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("aerointel")
@@ -88,6 +91,43 @@ def migrate_weather_provenance():
         )
 
 
+def migrate_dashboard_demo_fields():
+    """Apply additive SQLite-only fields; PostgreSQL uses reviewed migration 006."""
+    if engine.dialect.name != "sqlite":
+        return
+    additions = {
+        "aircraft": {
+            "registration": "VARCHAR(24)", "aircraft_type": "VARCHAR(140)", "base_airport": "VARCHAR(4)",
+            "next_maintenance_due": "DATETIME", "hours_since_check": "FLOAT",
+            "is_demo": "BOOLEAN NOT NULL DEFAULT 0",
+        },
+        "crew": {
+            "display_name": "VARCHAR(100)", "role": "VARCHAR(60)",
+            "license_rating": "VARCHAR(120)", "duty_hours": "FLOAT",
+            "rest_hours": "FLOAT", "medical_expiry": "DATETIME",
+            "currency_expiry": "DATETIME", "is_demo": "BOOLEAN NOT NULL DEFAULT 0",
+        },
+        "maintenance_records": {"is_demo": "BOOLEAN NOT NULL DEFAULT 0"},
+        "schedule_records": {
+            "aircraft_id": "INTEGER REFERENCES aircraft(id) ON DELETE SET NULL",
+            "priority": "VARCHAR(20) NOT NULL DEFAULT 'normal'", "assignee": "VARCHAR(100)",
+            "origin_icao": "VARCHAR(4)", "destination_icao": "VARCHAR(4)",
+            "is_demo": "BOOLEAN NOT NULL DEFAULT 0",
+        },
+        "alerts": {"is_read": "BOOLEAN NOT NULL DEFAULT 0", "is_demo": "BOOLEAN NOT NULL DEFAULT 0"},
+        "analysis_reports": {"is_demo": "BOOLEAN NOT NULL DEFAULT 0"},
+    }
+    with engine.begin() as connection:
+        existing_tables = set(inspect(engine).get_table_names())
+        for table, columns in additions.items():
+            if table not in existing_tables:
+                continue
+            existing_columns = {column["name"] for column in inspect(engine).get_columns(table)}
+            for name, sql_type in columns.items():
+                if name not in existing_columns:
+                    connection.exec_driver_sql(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {sql_type}')
+
+
 def initialize_database():
     is_production = settings.app_env.lower() in {"production", "prod"}
     get_jwt_secret()
@@ -97,6 +137,7 @@ def initialize_database():
         raise RuntimeError("Production DATABASE_URL must point to PostgreSQL; SQLite is supported only for local development and tests.")
     if engine.dialect.name == "sqlite" and not is_production:
         Base.metadata.create_all(bind=engine)
+        migrate_dashboard_demo_fields()
         migrate_weather_provenance()
     else:
         existing = set(inspect(engine).get_table_names())
@@ -170,6 +211,13 @@ def rate_limit(request: Request, key: str, maximum: int = 10, window_seconds: in
 
 def operational_read_access(credentials=Depends(bearer), db: Session = Depends(get_db)):
     return current_user(credentials, db)
+
+
+def selected_date_window(days: int) -> tuple[datetime, datetime]:
+    if days not in {1, 7, 30}:
+        raise HTTPException(status_code=422, detail="days must be 1, 7, or 30")
+    now = datetime.now(timezone.utc)
+    return now - timedelta(days=days), now + timedelta(days=days)
 
 
 @app.exception_handler(SQLAlchemyError)
@@ -316,10 +364,47 @@ def public_inventory(
     }}
 
 
+@app.get("/api/official-disclosures")
+def official_aviation_disclosures(
+    service: str | None = Query(None, max_length=80),
+    q: str | None = Query(None, max_length=120),
+    _profile: Profile = Depends(operational_read_access),
+):
+    """Return attributed public procurement disclosures; never merge them into active inventory."""
+    dataset = load_official_disclosures()
+    if service and service not in {"Indian Air Force", "Indian Army Aviation", "Indian Navy Aviation"}:
+        raise HTTPException(status_code=422, detail="Unknown service filter")
+    rows = [
+        {
+            **row,
+            "data_origin": dataset["data_origin"],
+            "dataset_version": dataset["dataset_version"],
+            "imported_at": dataset["imported_at"],
+            "terms_note": dataset["terms_note"],
+        }
+        for row in filtered_official_disclosures(dataset, service, q)
+    ]
+    return {
+        "data": rows,
+        "summary": {"record_count": len(rows), "total_disclosures": len(dataset["records"])},
+        "meta": {
+            "data_origin": dataset["data_origin"],
+            "source_name": dataset["source_name"],
+            "dataset_version": dataset["dataset_version"],
+            "imported_at": dataset["imported_at"],
+            "terms_note": dataset["terms_note"],
+            "limitation": dataset["limitation"],
+            "filters": {"service": service, "q": q},
+        },
+    }
+
+
 @app.get("/api/aircraft")
-def aircraft(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
-    rows = db.scalars(select(Aircraft).order_by(Aircraft.resource_id).offset(offset).limit(limit)).all()
-    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset, "data_mode": "demo" if settings.demo_mode else "database"}}
+def aircraft(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), days: int = Query(7), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
+    since, _ = selected_date_window(days)
+    query = select(Aircraft).where(Aircraft.updated_at >= since).order_by(Aircraft.resource_id)
+    rows = db.scalars(query.offset(offset).limit(limit)).all()
+    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset, "days": days, "date_field": "updated_at", "timezone": "UTC", "data_mode": "demo" if settings.demo_mode else "database"}}
 
 
 @app.post("/api/aircraft", status_code=201)
@@ -364,9 +449,11 @@ def delete_aircraft(aircraft_id: int, profile: Profile = Depends(require_roles("
 
 
 @app.get("/api/crew")
-def crew(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
-    rows = db.scalars(select(Crew).order_by(Crew.display_id).offset(offset).limit(limit)).all()
-    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset}}
+def crew(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), days: int = Query(7), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
+    since, _ = selected_date_window(days)
+    query = select(Crew).where(Crew.confirmation_at.is_not(None), Crew.confirmation_at >= since).order_by(Crew.display_id)
+    rows = db.scalars(query.offset(offset).limit(limit)).all()
+    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset, "days": days, "date_field": "confirmation_at", "timezone": "UTC"}}
 
 
 @app.post("/api/crew", status_code=201)
@@ -408,9 +495,11 @@ def delete_crew(crew_id: int, profile: Profile = Depends(require_roles("admin"))
 
 
 @app.get("/api/maintenance")
-def maintenance(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
-    rows = db.scalars(select(MaintenanceRecord).order_by(MaintenanceRecord.created_at.desc()).offset(offset).limit(limit)).all()
-    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset}}
+def maintenance(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), days: int = Query(7), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
+    since, _ = selected_date_window(days)
+    query = select(MaintenanceRecord).where(MaintenanceRecord.created_at >= since).order_by(MaintenanceRecord.created_at.desc())
+    rows = db.scalars(query.offset(offset).limit(limit)).all()
+    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset, "days": days, "date_field": "created_at", "timezone": "UTC"}}
 
 
 @app.post("/api/maintenance", status_code=201)
@@ -458,9 +547,11 @@ def delete_maintenance(record_id: int, profile: Profile = Depends(require_roles(
 
 
 @app.get("/api/schedules")
-def schedules(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
-    rows = db.scalars(select(ScheduleRecord).order_by(ScheduleRecord.starts_at).offset(offset).limit(limit)).all()
-    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset}}
+def schedules(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), days: int = Query(7), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
+    since, until = selected_date_window(days)
+    query = select(ScheduleRecord).where(ScheduleRecord.starts_at >= since, ScheduleRecord.starts_at <= until).order_by(ScheduleRecord.starts_at)
+    rows = db.scalars(query.offset(offset).limit(limit)).all()
+    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset, "days": days, "date_field": "starts_at", "window": "past and future", "timezone": "UTC"}}
 
 
 @app.get("/api/schedules/conflicts")
@@ -509,12 +600,34 @@ def update_schedule(schedule_id: int, payload: ScheduleUpdate, profile: Profile 
 
 
 @app.get("/api/alerts")
-def alerts(status: str | None = Query(None, pattern="^(open|acknowledged|resolved)$"), limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
+def alerts(status: str | None = Query(None, pattern="^(open|acknowledged|resolved)$"), limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), days: int = Query(7), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
+    since, _ = selected_date_window(days)
     query = select(Alert).order_by(Alert.created_at.desc())
+    query = query.where(Alert.created_at >= since)
     if status:
         query = query.where(Alert.status == status)
     rows = db.scalars(query.offset(offset).limit(limit)).all()
-    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset}}
+    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset, "days": days, "date_field": "created_at", "timezone": "UTC"}}
+
+
+@app.get("/api/public-aviation-data")
+async def public_aviation_data(_profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
+    """Live public weather and coarse flight count; external outages are non-fatal."""
+    airports = [row[0] for row in db.query(Aircraft.base_airport).filter(Aircraft.base_airport.is_not(None)).distinct().limit(10).all()]
+    result = await fetch_public_aviation_data(airports)
+    fallback = {"is_demo": True, "data_origin": "SYNTHETIC_DEMO_FALLBACK"}
+    if result["data"]["metar_source"] == "unavailable":
+        observations = db.scalars(select(WeatherObservation).where(WeatherObservation.source == "demo")
+                                  .order_by(WeatherObservation.observed_at.desc()).limit(24)).all()
+        fallback["weather_observations"] = rows_as_dict(observations)
+    if result["data"]["opensky_source"] == "unavailable":
+        fallback["scheduled_demo_flights"] = db.scalar(select(func.count()).select_from(ScheduleRecord).where(
+            ScheduleRecord.is_demo.is_(True), ScheduleRecord.category.ilike("%flight%")
+        )) or 0
+    if "weather_observations" in fallback or "scheduled_demo_flights" in fallback:
+        result["data"]["fallback"] = fallback
+        result["notices"].append("Showing labelled synthetic fallback records where a public feed is unavailable; these are not live observations.")
+    return result
 
 
 @app.post("/api/alerts", status_code=201)
@@ -715,12 +828,56 @@ async def ai_analyze(payload: AnalyzeInput, profile: Profile = Depends(current_u
 
 
 @app.get("/api/reports")
-def reports(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
-    query = select(AnalysisReport).order_by(AnalysisReport.created_at.desc())
+def reports(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), days: int = Query(7), profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
+    since, _ = selected_date_window(days)
+    query = select(AnalysisReport).where(AnalysisReport.created_at >= since).order_by(AnalysisReport.created_at.desc())
     if profile.role != "admin":
-        query = query.where(AnalysisReport.generated_by == profile.id)
+        query = query.where(or_(AnalysisReport.generated_by == profile.id,
+                                AnalysisReport.report_type.in_(("operational_snapshot", "demo_dashboard_snapshot"))))
     rows = db.scalars(query.offset(offset).limit(limit)).all()
-    return {"data": rows_as_dict(rows, omit=("filters_json",)), "meta": {"limit": limit, "offset": offset}}
+    read_scope = "own and shared snapshots" if profile.role != "admin" else "all reports"
+    return {"data": rows_as_dict(rows, omit=("filters_json",)), "meta": {"limit": limit, "offset": offset, "days": days, "date_field": "created_at", "timezone": "UTC", "read_scope": read_scope}}
+
+
+@app.post("/api/reports/recalculate")
+def recalculate_report(days: int = Query(7), profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
+    since, until = selected_date_window(days)
+    aircraft_rows = list(db.scalars(select(Aircraft).where(Aircraft.updated_at >= since)).all())
+    crew_rows = list(db.scalars(select(Crew).where(Crew.confirmation_at.is_not(None), Crew.confirmation_at >= since)).all())
+    maintenance_rows = list(db.scalars(select(MaintenanceRecord).where(MaintenanceRecord.created_at >= since)).all())
+    schedule_rows = list(db.scalars(select(ScheduleRecord).where(ScheduleRecord.starts_at >= since, ScheduleRecord.starts_at <= until)).all())
+    alert_rows = list(db.scalars(select(Alert).where(Alert.created_at >= since)).all())
+    is_demo_snapshot = any(row.is_demo for row in [*aircraft_rows, *crew_rows, *maintenance_rows, *schedule_rows, *alert_rows])
+    metrics = calculate_operational_metrics(aircraft_rows, crew_rows)
+    done_tasks = sum(row.status in {"complete", "completed"} for row in [*maintenance_rows, *schedule_rows])
+    all_tasks = len(maintenance_rows) + len(schedule_rows)
+    derived = {
+        **metrics,
+        "maintenance_records": len(maintenance_rows),
+        "schedule_records": len(schedule_rows),
+        "task_completion_pct": round(100 * done_tasks / all_tasks) if all_tasks else None,
+        "alerts_by_severity": {level: sum(row.severity == level for row in alert_rows) for level in ("low", "medium", "high", "critical")},
+        "window_start": since.isoformat(), "window_end": until.isoformat(), "timezone": "UTC",
+        "data_origin": "SYNTHETIC_DEMO" if is_demo_snapshot else "DATABASE_RECORDS",
+    }
+    report = db.scalar(select(AnalysisReport).where(
+        AnalysisReport.generated_by == profile.id,
+        AnalysisReport.report_type == "operational_snapshot",
+        AnalysisReport.is_demo.is_(is_demo_snapshot),
+    ).order_by(AnalysisReport.created_at.desc()))
+    if report is None:
+        report = AnalysisReport(report_type="operational_snapshot", generated_by=profile.id, is_demo=is_demo_snapshot)
+        db.add(report)
+    report.filters_json = json.dumps({"days": days, "metrics": derived}, default=str)
+    report.summary = (f"{days}-day snapshot: {len(aircraft_rows)} aircraft records; "
+                      f"{len(crew_rows)} crew records; {len(maintenance_rows)} maintenance items; "
+                      f"{len(schedule_rows)} schedule items; {len(alert_rows)} alerts; "
+                      f"task completion {derived['task_completion_pct'] if derived['task_completion_pct'] is not None else 'unavailable'}%.")
+    report.created_at = datetime.now(timezone.utc)
+    db.add(AuditLog(profile_id=profile.id, action="report.recalculated", details=f"days={days}"))
+    db.commit()
+    db.refresh(report)
+    return {"data": rows_as_dict([report])[0], "metrics": derived}
 
 
 @app.post("/api/reports", status_code=201)

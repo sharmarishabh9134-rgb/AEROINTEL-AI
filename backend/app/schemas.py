@@ -32,6 +32,12 @@ class AircraftInput(BaseModel):
     maintenance_status: str = Field(pattern="^(clear|open|in_progress|completed)$")
     readiness_confirmation: bool = False
     notes: str = Field(default="", max_length=2000)
+    registration: str | None = Field(default=None, max_length=24)
+    aircraft_type: str | None = Field(default=None, max_length=140)
+    base_airport: str | None = Field(default=None, min_length=4, max_length=4, pattern="^[A-Z]{4}$")
+    next_maintenance_due: datetime | None = None
+    hours_since_check: float | None = Field(default=None, ge=0, le=50000, allow_inf_nan=False)
+    is_demo: bool = False
 
     @field_validator("resource_id", mode="before")
     @classmethod
@@ -45,12 +51,25 @@ class AircraftUpdate(BaseModel):
     maintenance_status: str | None = Field(default=None, pattern="^(clear|open|in_progress|completed)$")
     readiness_confirmation: bool | None = None
     notes: str | None = Field(default=None, max_length=2000)
+    registration: str | None = Field(default=None, max_length=24)
+    aircraft_type: str | None = Field(default=None, max_length=140)
+    base_airport: str | None = Field(default=None, min_length=4, max_length=4, pattern="^[A-Z]{4}$")
+    next_maintenance_due: datetime | None = None
+    hours_since_check: float | None = Field(default=None, ge=0, le=50000, allow_inf_nan=False)
 
 
 class CrewInput(BaseModel):
     display_id: str = Field(min_length=2, max_length=30, pattern="^[A-Za-z0-9_-]+$")
     group_name: str = Field(min_length=2, max_length=80)
     readiness_status: str = Field(pattern="^(ready|review|unavailable)$")
+    display_name: str | None = Field(default=None, max_length=100)
+    role: str | None = Field(default=None, max_length=60)
+    license_rating: str | None = Field(default=None, max_length=120)
+    duty_hours: float | None = Field(default=None, ge=0, le=24, allow_inf_nan=False)
+    rest_hours: float | None = Field(default=None, ge=0, le=168, allow_inf_nan=False)
+    medical_expiry: datetime | None = None
+    currency_expiry: datetime | None = None
+    is_demo: bool = False
 
     @field_validator("display_id", mode="before")
     @classmethod
@@ -61,6 +80,13 @@ class CrewInput(BaseModel):
 class CrewUpdate(BaseModel):
     group_name: str | None = Field(default=None, min_length=2, max_length=80)
     readiness_status: str | None = Field(default=None, pattern="^(ready|review|unavailable)$")
+    display_name: str | None = Field(default=None, max_length=100)
+    role: str | None = Field(default=None, max_length=60)
+    license_rating: str | None = Field(default=None, max_length=120)
+    duty_hours: float | None = Field(default=None, ge=0, le=24, allow_inf_nan=False)
+    rest_hours: float | None = Field(default=None, ge=0, le=168, allow_inf_nan=False)
+    medical_expiry: datetime | None = None
+    currency_expiry: datetime | None = None
 
 
 class MaintenanceInput(BaseModel):
@@ -69,6 +95,7 @@ class MaintenanceInput(BaseModel):
     status: str = Field(pattern="^(open|in_progress|completed|overdue)$")
     priority: str = Field(default="normal", pattern="^(low|normal|high|critical)$")
     due_at: datetime | None = None
+    is_demo: bool = False
 
 
 class MaintenanceUpdate(BaseModel):
@@ -83,6 +110,12 @@ class ScheduleInput(BaseModel):
     status: str = Field(default="scheduled", pattern="^(scheduled|in_progress|complete|cancelled)$")
     starts_at: datetime
     ends_at: datetime | None = None
+    aircraft_id: int | None = None
+    priority: str = Field(default="normal", pattern="^(low|normal|high|critical)$")
+    assignee: str | None = Field(default=None, max_length=100)
+    origin_icao: str | None = Field(default=None, min_length=4, max_length=4, pattern="^[A-Z]{4}$")
+    destination_icao: str | None = Field(default=None, min_length=4, max_length=4, pattern="^[A-Z]{4}$")
+    is_demo: bool = False
 
     @field_validator("starts_at")
     @classmethod
@@ -98,6 +131,11 @@ class ScheduleUpdate(BaseModel):
     status: str | None = Field(default=None, pattern="^(scheduled|in_progress|complete|cancelled)$")
     starts_at: datetime | None = None
     ends_at: datetime | None = None
+    aircraft_id: int | None = None
+    priority: str | None = Field(default=None, pattern="^(low|normal|high|critical)$")
+    assignee: str | None = Field(default=None, max_length=100)
+    origin_icao: str | None = Field(default=None, min_length=4, max_length=4, pattern="^[A-Z]{4}$")
+    destination_icao: str | None = Field(default=None, min_length=4, max_length=4, pattern="^[A-Z]{4}$")
 
     @field_validator("starts_at", "ends_at")
     @classmethod

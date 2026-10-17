@@ -1,0 +1,58 @@
+{
+  "dataset_version": "2026-10-18.1",
+  "imported_at": "2026-10-18T00:00:00Z",
+  "data_origin": "REAL_PUBLIC_DISCLOSURE",
+  "source_name": "Government of India · Press Information Bureau / Ministry of Defence",
+  "terms_note": "Public government press-release facts; source attribution is retained. No separate reuse license is asserted.",
+  "limitation": "Procurement and contract quantities are not delivered-aircraft counts, active inventory, serviceability, availability, or readiness.",
+  "records": [
+    {
+      "record_id": "PIB-2171108-IAF-LCA-MK1A",
+      "service": "Indian Air Force",
+      "aircraft": "LCA Mk1A",
+      "quantity": 97,
+      "quantity_description": "Aircraft under procurement contract",
+      "event_type": "procurement_contract",
+      "event_date": "2025-09-25",
+      "delivery_note": "Deliveries scheduled to begin in 2027–28 and complete over six years, as stated in the release.",
+      "source": "PIB release PRID 2171108 · Ministry of Defence",
+      "source_url": "https://www.pib.gov.in/PressReleasePage.aspx?PRID=2171108&lang=2&reg=3"
+    },
+    {
+      "record_id": "PIB-2116411-IAF-LCH-PRACHAND",
+      "service": "Indian Air Force",
+      "aircraft": "LCH Prachand",
+      "quantity": 66,
+      "quantity_description": "Aircraft under procurement contract",
+      "event_type": "procurement_contract",
+      "event_date": "2025-03-28",
+      "delivery_note": "The release says supply would commence from the third year and be spread over the following five years.",
+      "source": "PIB release PRID 2116411 · Ministry of Defence",
+      "source_url": "https://www.pib.gov.in/PressReleasePage.aspx?PRID=2116411&lang=2&reg=48"
+    },
+    {
+      "record_id": "PIB-1753260-IAF-C295MW",
+      "service": "Indian Air Force",
+      "aircraft": "C-295MW",
+      "quantity": 56,
+      "quantity_description": "Aircraft approved for procurement",
+      "event_type": "procurement_approval",
+      "event_date": "2021-09-08",
+      "delivery_note": "The Cabinet approved procurement of 56: 16 planned from Spain and 40 planned for manufacture in India. This entry does not assert current delivery progress.",
+      "source": "PIB release PRID 1753260 · Ministry of Defence",
+      "source_url": "https://www.pib.gov.in/PressReleasePage.aspx?PRID=1753260&lang=2&reg=48"
+    },
+    {
+      "record_id": "PIB-2116411-ARMY-LCH-PRACHAND",
+      "service": "Indian Army Aviation",
+      "aircraft": "LCH Prachand",
+      "quantity": 90,
+      "quantity_description": "Aircraft under procurement contract",
+      "event_type": "procurement_contract",
+      "event_date": "2025-03-28",
+      "delivery_note": "The release says supply would commence from the third year and be spread over the following five years.",
+      "source": "PIB release PRID 2116411 · Ministry of Defence",
+      "source_url": "https://www.pib.gov.in/PressReleasePage.aspx?PRID=2116411&lang=2&reg=48"
+    }
+  ]
+}

@@ -28,6 +28,12 @@ class Aircraft(Base):
     readiness_confirmation: Mapped[bool] = mapped_column(Boolean, default=False)
     notes: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    registration: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    aircraft_type: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    base_airport: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    next_maintenance_due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hours_since_check: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class PublicInventoryRecord(Base):
@@ -60,6 +66,14 @@ class Crew(Base):
     group_name: Mapped[str] = mapped_column(String(80))
     readiness_status: Mapped[str] = mapped_column(String(30))
     confirmation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    role: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    license_rating: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    duty_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rest_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    medical_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    currency_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class MaintenanceRecord(Base):
@@ -71,6 +85,7 @@ class MaintenanceRecord(Base):
     priority: Mapped[str] = mapped_column(String(20), default="normal")
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class WeatherObservation(Base):
@@ -105,6 +120,12 @@ class ScheduleRecord(Base):
     status: Mapped[str] = mapped_column(String(30), index=True)
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    aircraft_id: Mapped[int | None] = mapped_column(ForeignKey("aircraft.id", ondelete="SET NULL"), nullable=True, index=True)
+    priority: Mapped[str] = mapped_column(String(20), default="normal", nullable=False)
+    assignee: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    origin_icao: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    destination_icao: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class Alert(Base):
@@ -116,6 +137,8 @@ class Alert(Base):
     status: Mapped[str] = mapped_column(String(20), default="open", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class AnalysisReport(Base):
@@ -126,6 +149,7 @@ class AnalysisReport(Base):
     summary: Mapped[str] = mapped_column(Text)
     generated_by: Mapped[int | None] = mapped_column(ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class AuditLog(Base):

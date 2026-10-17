@@ -70,7 +70,12 @@ For PostgreSQL/Supabase, inspect the schema and apply reviewed additive migratio
 
 The supplied row list sums to 1,699 Air Force aircraft versus the approximate headline of 1,700, 367 Army Aviation aircraft, and 287 Navy aircraft. Across services the rows sum to 2,353 versus the approximate headline of 2,350. These differences are reported by the API/UI rather than silently changing the source rows. The last two differences are ordinary rounding/approximation at this precision. Inventory estimates do not establish serviceability, availability, maintenance, crew, or live aircraft location; those values are unavailable in the supplied source and are not inferred from inventory.
 
-The referenced GlobalMilitary.net page may publish later snapshots and, when checked on October 10, 2026, its headline described 2,353 aircraft as the Indian Air Force inventory. That conflicts materially with the supplied PDF's 1,700 approximate IAF figure and supplied per-service model rows. The imported version intentionally preserves the supplied dated values, and the inventory screen surfaces this source-scope conflict. The reference currently behaves as a website page; no permitted public API was documented in the provided material. Do not scrape or automatically refresh it: the site's terms prohibit systematic downloads without permission. Update the versioned dataset only after reviewing a new source snapshot and its scope.
+
+## Official Government of India aviation disclosures
+
+The **Official Government Disclosures** view is separate from inventory estimates and operational aircraft records. It contains dated facts from Ministry of Defence / Press Information Bureau publications, including procurement approvals and contracts for LCA Mk1A, LCH Prachand, and C-295MW. The API serves the reviewed, versioned snapshot at `/api/official-disclosures`; it does not merge contract quantities into current fleet totals. Quantities represent the event described by each release (approval or contract), not delivered aircraft, active strength, or readiness. Each record links to its original PIB publication. The exact active fleet strength is not represented here: the Government stated in a Rajya Sabha answer that disclosing types and strength was not in the interest of national security ([Rajya Sabha debate, 28 March 2012](https://cms.rajyasabha.nic.in/UploadedFiles/Debates/OfficialDebatesDatewise/Floor/225/F28.03.2012.pdf)).
+
+The source data is `data/india_official_aviation_disclosures_2026_10_18.json`. Update it only after reviewing a primary government publication, preserve the publication date and URL, and increment `dataset_version`. Do not use these order/approval quantities to calculate active aircraft inventory.
 
 ## Supabase PostgreSQL
 
@@ -229,6 +234,14 @@ The official catalog ZIP is available from the [NASA C-MAPSS dataset record](htt
 - `POST /copilot/ask` returns a context answer, source IDs, and similar cases. `RAG_PROVIDER=local` uses local TF-IDF retrieval; `ollama` uses `OLLAMA_URL` and `OLLAMA_MODEL`; `api` uses `RAG_API_URL`, `RAG_API_KEY`, and `RAG_API_MODEL`.
 - `GET /copilot/evaluation` runs a fixed set of 15 retrieval questions.
 - `WS /ws/fleet` streams fleet refreshes and a rotating synthetic fault every 30 seconds in demo mode.
+
+## Operations dashboard data
+
+The operations dashboard reads saved aircraft, crew, maintenance, schedule, alert, and report rows from the configured database. `GET /api/public-aviation-data` is a best-effort public feed: airport METARs come from aviationweather.gov and OpenSky is reduced to a coarse India-region aircraft count. Both providers are cached, time-limited, retried once, and allowed to fail without breaking dashboard requests; the endpoint then includes a clearly labeled synthetic fallback from saved sample weather and schedule records. These live public observations are not linked to individual fleet records.
+
+For local development only, `python -m backend.scripts.seed_dashboard_demo` creates or refreshes repeatable sample rows on a SQLite database when `APP_ENV` is non-production and `DEMO_MODE=true`. Crew identities, registrations, operational status, airports assigned to aircraft, maintenance, schedules, and alerts are synthetic and are stored with `is_demo=true`; fictional names are used. Public inventory contributes aircraft type labels and aggregate estimates only. The script refuses PostgreSQL and production configurations. Do not use sample records for safety, dispatch, or airworthiness decisions.
+
+For a local PowerShell session, set `APP_ENV=development`, `DEMO_MODE=true`, and `DATABASE_URL=sqlite:///./aerointel_demo.db` before running the seed command. The script uses its own stable `SAMPLE-*` identifiers, so the legacy cleanup for older `DEMO-*` fixtures leaves these rows intact. For a production PostgreSQL database, first apply `backend/migrations/006_dashboard_demo_fields.sql`, then explicitly opt into sample records with `python -m backend.scripts.seed_dashboard_demo --allow-production`. This option is never used automatically. Production connectivity was unavailable during this task, so no production migration or seed was run.
 
 ## Roles, audit, and compose
 

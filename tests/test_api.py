@@ -74,6 +74,71 @@ def test_health_and_seeded_dashboard(client):
     assert summary["maintenance_open"] == 9
 
 
+def test_dashboard_page_endpoints_have_seeded_rows_and_period_filters(client):
+    import backend.app.database as database
+    import backend.app.dashboard_demo as demo_module
+    from backend.app.models import Base
+    temp_engine = database.make_engine(f"sqlite:///{(Path(tempfile.gettempdir()) / f'aerointel_dashboard_{uuid.uuid4().hex}.db').as_posix()}")
+    old_engine = database.engine
+    old_main_engine = main_module.engine
+    old_demo_engine = demo_module.engine
+    Base.metadata.create_all(bind=temp_engine)
+    database.engine = temp_engine
+    database.SessionLocal.configure(bind=temp_engine)
+    main_module.engine = temp_engine
+    demo_module.engine = temp_engine
+    try:
+        registration = client.post("/api/auth/register", json={"email":"dashboard-data@example.com", "password":"dashboard-data-test-passphrase"})
+        assert registration.status_code == 201
+        token = registration.json()["data"]["access_token"]
+        headers = {"Authorization":f"Bearer {token}"}
+        with database.SessionLocal() as db:
+            counts = demo_module.seed_dashboard_demo_data(db)
+        assert all(counts[key] > 0 for key in ("aircraft", "crew", "maintenance", "schedules", "alerts", "reports"))
+        recalculated = client.post("/api/reports/recalculate?days=7", headers=headers)
+        assert recalculated.status_code == 200
+        assert recalculated.json()["data"]["report_type"] == "operational_snapshot"
+        for route in ("/api/aircraft", "/api/crew", "/api/maintenance", "/api/schedules", "/api/alerts", "/api/reports"):
+            response = client.get(route, headers=headers)
+            assert response.status_code == 200, route
+            assert isinstance(response.json().get("data"), list), route
+            assert response.json()["data"], route
+            assert any(row.get("is_demo") is True for row in response.json()["data"]), route
+        one_day = client.get("/api/schedules?days=1", headers=headers).json()["data"]
+        month = client.get("/api/schedules?days=30", headers=headers).json()["data"]
+        assert len(one_day) < len(month)
+    finally:
+        database.SessionLocal.configure(bind=old_engine)
+        database.engine = old_engine
+        main_module.engine = old_main_engine
+        demo_module.engine = old_demo_engine
+        temp_engine.dispose()
+        Path(temp_engine.url.database).unlink(missing_ok=True)
+
+
+def test_public_aviation_provider_failure_uses_labelled_fallback(client, monkeypatch):
+    import backend.app.main as main
+    from backend.app.models import ScheduleRecord
+
+    with SessionLocal() as db:
+        db.add(ScheduleRecord(title="Synthetic fallback flight", category="Flight · synthetic demo",
+                              status="scheduled", starts_at=datetime.now(timezone.utc), is_demo=True))
+        db.commit()
+
+    async def offline(_airports):
+        return {"data": {"metars": [], "metar_source": "unavailable", "opensky_source": "unavailable",
+                         "opensky_aircraft_count": None}, "notices": ["provider offline"]}
+
+    monkeypatch.setattr(main, "fetch_public_aviation_data", offline)
+    response = client.get("/api/public-aviation-data")
+    assert response.status_code == 200
+    fallback = response.json()["data"]["fallback"]
+    assert fallback["is_demo"] is True
+    assert fallback["data_origin"] == "SYNTHETIC_DEMO_FALLBACK"
+    assert fallback["weather_observations"]
+    assert fallback["scheduled_demo_flights"] > 0
+
+
 def test_sqlite_reinitialization_preserves_existing_records(client):
     from backend.app.models import (Aircraft, Alert, AuditLog, Crew, MaintenanceRecord,
                             PublicInventoryRecord, ScheduleRecord, WeatherObservation)
@@ -446,7 +511,8 @@ def test_authorized_crud_and_schedule_conflict(client):
     report = client.post("/api/reports", headers=headers, json={"report_type":"integration-test","filters":{}})
     assert report.status_code == 201
     assert "confirmed readiness" in report.json()["data"]["summary"]
-    assert len(client.get("/api/reports", headers=headers).json()["data"]) == 1
+    own_report_ids = {row["id"] for row in client.get("/api/reports", headers=headers).json()["data"]}
+    assert report.json()["data"]["id"] in own_report_ids
     from backend.app.security import create_access_token
     with SessionLocal() as db:
         viewer_profile = Profile(email="report-viewer@example.com", password_hash="test-only", role="viewer")
@@ -659,7 +725,7 @@ def test_public_inventory_api_filters_and_attributes_source(client):
     assert body["meta"]["data_classification"] == "ESTIMATE"
     assert body["meta"]["source_url"] == "https://www.globalmilitary.net/air_forces/ind/"
     assert body["meta"]["source_date"].startswith("2026-10-10")
-    assert "conflicts with the supplied service-level breakdown" in body["meta"]["source_note"]
+    assert "2,353 listed rows versus the rounded all-services estimate" in body["meta"]["source_note"]
     assert "not official operational readiness" in body["meta"]["notice"]
 
 
