@@ -253,12 +253,31 @@ def summary(_profile: Profile | None = Depends(operational_read_access), db: Ses
     result = dashboard_summary(db)
     dataset = load_dataset()
     rows = dataset["records"]
-    listed_total = sum(int(row["estimated_count"]) for row in rows
-                       if row.get("count_type") != "procurement_order" and row.get("is_active_inventory", True))
+    active_rows = [row for row in rows
+                   if row.get("count_type") != "procurement_order" and row.get("is_active_inventory", True)]
+    listed_total = sum(int(row["estimated_count"]) for row in active_rows)
+    organizations = sorted({row["organization"] for row in active_rows})
+    categories = sorted({row["category"] for row in active_rows})
+    service_totals = {
+        organization: sum(int(row["estimated_count"]) for row in active_rows
+                          if row["organization"] == organization)
+        for organization in organizations
+    }
+    category_totals = {
+        category: sum(int(row["estimated_count"]) for row in active_rows
+                      if row["category"] == category)
+        for category in categories
+    }
+    top_types = sorted(active_rows, key=lambda row: (-int(row["estimated_count"]),
+                                                     row["organization"], row["display_name"]))[:5]
     result["public_inventory_estimate"] = {
         "reported_total": dataset["reported_approximate_totals"]["All services"],
         "listed_row_total": listed_total,
-        "model_rows": len(rows),
+        "model_rows": len(active_rows),
+        "service_totals": service_totals,
+        "category_totals": category_totals,
+        "top_types": [{key: row[key] for key in ("organization", "display_name", "category", "estimated_count")}
+                      for row in top_types],
         "source_date": dataset["source_date"],
         "source_name": dataset["source_name"],
         "source_url": dataset["source_url"],
