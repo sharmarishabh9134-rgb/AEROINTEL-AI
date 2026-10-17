@@ -9,6 +9,8 @@ services:
       DEMO_MODE: "true"
       DATABASE_URL: sqlite:////app/state/aerointel_demo.db
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
       RAG_PROVIDER: ${RAG_PROVIDER:-local}
       OLLAMA_URL: http://ollama:11434/api/generate
     volumes: ["aero-db:/app/state"]
