@@ -63,6 +63,8 @@ def test_health_and_seeded_dashboard(client):
     assert health.json()["data"]["database"] == "connected"
     summary = client.get("/api/dashboard/summary").json()["data"]
     assert summary["aircraft_total"] == 48
+    assert summary["public_inventory_estimate"]["reported_total"] == 2350
+    assert summary["public_inventory_estimate"]["listed_row_total"] == 2353
     assert summary["aircraft_available"] > 0
     assert summary["meta"]["data_mode"] == "demo"
     assert summary["readiness_pct"] == 88  # 42 explicit confirmations / 48 explicit booleans
@@ -640,11 +642,11 @@ def test_public_inventory_import_is_idempotent_and_excludes_procurement(client):
 
 
 def test_public_inventory_api_filters_and_attributes_source(client):
-    from backend.app.inventory import import_inventory
     from backend.app.models import PublicInventoryRecord
 
     with SessionLocal() as db:
-        import_inventory(db)
+        db.query(PublicInventoryRecord).delete()
+        db.commit()
     response = client.get("/api/public-inventory?organization=Indian%20Navy%20Aviation&category=Helicopters&model=Dhruv")
     assert response.status_code == 200
     body = response.json()
@@ -652,6 +654,8 @@ def test_public_inventory_api_filters_and_attributes_source(client):
     assert body["data"][0]["display_name"] == "Dhruv"
     assert body["data"][0]["estimated_count"] == 24
     assert body["data"][0]["count_type"] == "estimated_inventory"
+    with SessionLocal() as db:
+        assert db.query(PublicInventoryRecord).count() == 62
     assert body["meta"]["data_classification"] == "ESTIMATE"
     assert body["meta"]["source_url"] == "https://www.globalmilitary.net/air_forces/ind/"
     assert body["meta"]["source_date"].startswith("2026-10-10")

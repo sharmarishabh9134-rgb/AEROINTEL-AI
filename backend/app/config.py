@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash"
     open_meteo_latitude: float = Field(default=28.6139, ge=-90, le=90)
     open_meteo_longitude: float = Field(default=77.2090, ge=-180, le=180)
-    open_meteo_location: str = "Demo region"
+    open_meteo_location: str = "New Delhi, India"
     weather_cache_seconds: int = Field(default=600, ge=30, le=86400)
 
     @field_validator("frontend_url")

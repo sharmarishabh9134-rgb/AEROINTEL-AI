@@ -18,7 +18,7 @@ from backend.app.models import (Aircraft, Alert, AnalysisReport, AuditLog, Crew,
 from backend.app.schemas import (AlertCreate, AircraftInput, AircraftUpdate, AnalyzeInput, CrewInput, CrewUpdate, LoginInput, MaintenanceInput, MaintenanceUpdate, ReportCreate, ScheduleInput, ScheduleUpdate, UserCreate, UserOut)
 from backend.app.security import bearer, create_access_token, current_user, get_jwt_secret, password_hash, require_roles
 from backend.app.services import analyze, classify_analyzer_intent, dashboard_summary, fetch_weather, rows_as_dict, trend_series
-from backend.app.inventory import filtered_inventory, inventory_summary, load_dataset
+from backend.app.inventory import filtered_inventory, import_inventory, inventory_summary, load_dataset
 from backend.app.seed import remove_seeded_demo_data, seed_demo_data
 from backend.app.ml_analytics import (NOTICE as ML_NOTICE, assistant_results as ml_assistant_results,
                                       dataset_summary as ml_dataset_summary,
@@ -250,7 +250,21 @@ def me(profile: Profile = Depends(current_user)):
 
 @app.get("/api/dashboard/summary")
 def summary(_profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
-    return {"data": dashboard_summary(db)}
+    result = dashboard_summary(db)
+    dataset = load_dataset()
+    rows = dataset["records"]
+    listed_total = sum(int(row["estimated_count"]) for row in rows
+                       if row.get("count_type") != "procurement_order" and row.get("is_active_inventory", True))
+    result["public_inventory_estimate"] = {
+        "reported_total": dataset["reported_approximate_totals"]["All services"],
+        "listed_row_total": listed_total,
+        "model_rows": len(rows),
+        "source_date": dataset["source_date"],
+        "source_name": dataset["source_name"],
+        "source_url": dataset["source_url"],
+        "source_note": dataset.get("source_note"),
+    }
+    return {"data": result}
 
 
 @app.get("/api/public-inventory")
@@ -263,6 +277,9 @@ def public_inventory(
 ):
     dataset = load_dataset()
     current = db.scalars(select(PublicInventoryRecord).where(PublicInventoryRecord.dataset_version == dataset["dataset_version"])).all()
+    if len(current) < len(dataset["records"]):
+        import_inventory(db, dataset)
+        current = db.scalars(select(PublicInventoryRecord).where(PublicInventoryRecord.dataset_version == dataset["dataset_version"])).all()
     filtered = filtered_inventory(db, organization, category, model, dataset["dataset_version"])
     current = [row for row in current if row.dataset_version == dataset["dataset_version"]]
     last_import = max((row.last_imported_at for row in current), default=None)
