@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", env_file_encoding="utf-8", extra="ignore")
     app_env: str = "development"
     demo_mode: bool = True
+    auto_seed_demo_data: bool = False
     database_url: str = "sqlite:///./aerointel_demo.db"
     supabase_url: str | None = None
     supabase_publishable_key: str | None = None

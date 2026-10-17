@@ -17,9 +17,9 @@ from backend.app.database import Base, engine, get_db
 from backend.app.models import (Aircraft, Alert, AnalysisReport, AuditLog, Crew, MaintenanceRecord, Profile, PublicInventoryRecord, ScheduleRecord, WeatherObservation)
 from backend.app.schemas import (AlertCreate, AircraftInput, AircraftUpdate, AnalyzeInput, CrewInput, CrewUpdate, LoginInput, MaintenanceInput, MaintenanceUpdate, ReportCreate, ScheduleInput, ScheduleUpdate, UserCreate, UserOut)
 from backend.app.security import bearer, create_access_token, current_user, get_jwt_secret, password_hash, require_roles
-from backend.app.seed import seed_demo_data
 from backend.app.services import analyze, classify_analyzer_intent, dashboard_summary, fetch_weather, rows_as_dict, trend_series
 from backend.app.inventory import filtered_inventory, inventory_summary, load_dataset
+from backend.app.seed import remove_seeded_demo_data, seed_demo_data
 from backend.app.ml_analytics import (NOTICE as ML_NOTICE, assistant_results as ml_assistant_results,
                                       dataset_summary as ml_dataset_summary,
                                       evaluation_metrics as ml_evaluation_metrics,
@@ -124,9 +124,12 @@ def initialize_database():
             missing_indexes.extend(f"{table}.{name}" for name in sorted(expected_names - actual_names))
         if missing_indexes:
             raise RuntimeError("Configured PostgreSQL is missing required indexes: " + ", ".join(missing_indexes) + ". Inspect duplicate business IDs and apply reviewed migrations 004 and 005 before startup.")
-    if settings.demo_mode and not is_production:
+    if settings.demo_mode:
         with Session(engine) as db:
-            seed_demo_data(db)
+            if settings.auto_seed_demo_data and not is_production:
+                seed_demo_data(db)
+            else:
+                remove_seeded_demo_data(db)
 
 
 @asynccontextmanager
@@ -166,9 +169,6 @@ def rate_limit(request: Request, key: str, maximum: int = 10, window_seconds: in
 
 
 def operational_read_access(credentials=Depends(bearer), db: Session = Depends(get_db)):
-    # Public operational reads exist only for the explicitly fictional local demo.
-    if settings.demo_mode and credentials is None:
-        return None
     return current_user(credentials, db)
 
 
@@ -258,6 +258,7 @@ def public_inventory(
     organization: str | None = Query(None, max_length=80),
     category: str | None = Query(None, max_length=60),
     model: str | None = Query(None, max_length=100),
+    _profile: Profile = Depends(operational_read_access),
     db: Session = Depends(get_db),
 ):
     dataset = load_dataset()
@@ -505,7 +506,7 @@ def update_alert(alert_id: int, action: str, profile: Profile = Depends(require_
 
 
 @app.get("/api/weather/current")
-async def weather_current(latitude: float | None = Query(None, ge=-90, le=90), longitude: float | None = Query(None, ge=-180, le=180), db: Session = Depends(get_db)):
+async def weather_current(latitude: float | None = Query(None, ge=-90, le=90), longitude: float | None = Query(None, ge=-180, le=180), _profile: Profile = Depends(operational_read_access), db: Session = Depends(get_db)):
     lat = settings.open_meteo_latitude if latitude is None else latitude
     lon = settings.open_meteo_longitude if longitude is None else longitude
     result = await fetch_weather(lat, lon, db)
@@ -513,7 +514,7 @@ async def weather_current(latitude: float | None = Query(None, ge=-90, le=90), l
 
 
 @app.get("/api/weather/forecast")
-async def weather_forecast(latitude: float | None = Query(None, ge=-90, le=90), longitude: float | None = Query(None, ge=-180, le=180), hours: int = Query(48, ge=1, le=72), db: Session = Depends(get_db)):
+async def weather_forecast(latitude: float | None = Query(None, ge=-90, le=90), longitude: float | None = Query(None, ge=-180, le=180), hours: int = Query(48, ge=1, le=72), _profile: Profile = Depends(operational_read_access), db: Session = Depends(get_db)):
     lat = settings.open_meteo_latitude if latitude is None else latitude
     lon = settings.open_meteo_longitude if longitude is None else longitude
     result = await fetch_weather(lat, lon, db)
@@ -528,7 +529,7 @@ def trends(days: int = Query(7, ge=1, le=30), mode: str = Query("live", pattern=
 
 
 @app.get("/api/airspace")
-def airspace():
+def airspace(_profile: Profile = Depends(operational_read_access)):
     return {"data": [{"region":"North demo sector","status":"nominal","source":"fictional sample","updated_at":datetime.now(timezone.utc).isoformat()}, {"region":"East demo sector","status":"advisory","source":"fictional sample","updated_at":datetime.now(timezone.utc).isoformat()}], "meta":{"data_mode":"demo", "notice":"Illustrative administrative status only; not connected to live airspace systems."}}
 
 
@@ -700,5 +701,5 @@ def create_report(payload: ReportCreate, profile: Profile = Depends(require_role
 
 
 @app.get("/api/admin/roles")
-def roles():
+def roles(_profile: Profile = Depends(current_user)):
     return {"data": ["admin", "analyst", "viewer"], "notice": "New self-registered accounts receive viewer access. An administrator must assign elevated roles."}

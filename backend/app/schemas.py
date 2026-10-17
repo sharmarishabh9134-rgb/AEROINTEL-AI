@@ -133,12 +133,12 @@ class AnalyzeInput(BaseModel):
 class MaintenanceDemoPrediction(BaseModel):
     aircraft_category: str = Field(min_length=2, max_length=60)
     propulsion_type: str = Field(min_length=2, max_length=40)
-    aircraft_age_years: float = Field(ge=0, le=100)
-    total_flight_hours: float = Field(ge=0, le=200_000)
-    total_cycles: float = Field(ge=0, le=250_000)
-    days_since_last_maintenance: float = Field(ge=0, le=3_650)
-    maintenance_events_last_12_months: int = Field(ge=0, le=100)
-    unresolved_maintenance_items: int = Field(ge=0, le=100)
+    aircraft_age_years: float = Field(ge=0, le=100, allow_inf_nan=False)
+    total_flight_hours: float = Field(ge=0, le=200_000, allow_inf_nan=False)
+    total_cycles: float = Field(ge=0, le=250_000, allow_inf_nan=False)
+    days_since_last_maintenance: float = Field(ge=0, le=3_650, allow_inf_nan=False)
+    maintenance_events_last_12_months: int = Field(ge=0, le=100, allow_inf_nan=False)
+    unresolved_maintenance_items: int = Field(ge=0, le=100, allow_inf_nan=False)
     inspection_overdue_flag: bool
 
     @field_validator("aircraft_category", "propulsion_type")

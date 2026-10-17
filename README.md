@@ -9,13 +9,13 @@ app_port: 7860
 
 # AEROINTEL AI
 
-The responsive dashboard is served by a FastAPI backend. Read-only dashboard data is fictional and marked as demo data. The default backend stores records in a local SQLite file at the repository root so the app works without external accounts. Run commands from the repository root; this keeps `.env` and relative SQLite paths anchored there. Configure `DATABASE_URL` with a Supabase PostgreSQL connection string to persist records there.
+The responsive dashboard is served by a FastAPI backend. Dashboard and analytics APIs require a signed-in account. New installs do not automatically seed sample operational records. When demo seeding is disabled, startup removes only the exact sample records created by the built-in seed routine and preserves other database rows. The default backend stores records in a local SQLite file at the repository root. Run commands from the repository root; this keeps `.env` and relative SQLite paths anchored there. Configure `DATABASE_URL` with a Supabase PostgreSQL connection string to persist records there.
 
 The main dashboard (`frontend/index.html`) and fleet dashboard (`frontend/fleet.html`) are served by the same FastAPI service. The main dashboard API client reads `window.AEROINTEL_CONFIG.apiBaseUrl`; `/api/client-config.js` supplies `PUBLIC_API_BASE_URL`. Leave it blank for same-origin hosting. If you deploy a dashboard on a separate static host, provide its API base URL there and set `FRONTEND_URL` to that site's origin. Keep credentials out of browser configuration.
 
 ## Deploy
 
-The one-service demo runs the FastAPI API and both dashboards on the same origin. Its container defaults to `APP_ENV=development`, `DEMO_MODE=true`, SQLite at `/app/state/aerointel_demo.db`, and port `7860`. It needs no Supabase or PostgreSQL service. Keep `FRONTEND_URL` and `PUBLIC_API_BASE_URL` blank for same-origin behavior; CORS is not needed for same-origin browser requests.
+The one-service container runs the FastAPI API and both dashboards on the same origin. It defaults to `APP_ENV=development`, SQLite at `/app/state/aerointel_demo.db`, and port `7860`. Sample operational records are not seeded unless `AUTO_SEED_DEMO_DATA=true` is explicitly set for a local demonstration. It needs no Supabase or PostgreSQL service. Keep `FRONTEND_URL` and `PUBLIC_API_BASE_URL` blank for same-origin behavior; CORS is not needed for same-origin browser requests.
 
 ### Hugging Face Spaces
 
@@ -28,7 +28,7 @@ The one-service demo runs the FastAPI API and both dashboards on the same origin
 
 1. Create a **Web Service** from this repository and select the **Docker** runtime, using the root `Dockerfile`.
 2. Set the health check path to `/api/health`.
-3. Set `APP_ENV=development`, `DEMO_MODE=true`, `DATABASE_URL=sqlite:////app/state/aerointel_demo.db`, and a strong `JWT_SECRET_KEY` in the Render dashboard. Render supplies `PORT`; the image defaults it to `7860` for local and Spaces use.
+3. Set `APP_ENV=development`, `DEMO_MODE=true`, `AUTO_SEED_DEMO_DATA=false`, `DATABASE_URL=sqlite:////app/state/aerointel_demo.db`, and a strong `JWT_SECRET_KEY` in the Render dashboard. Render supplies `PORT`; the image defaults it to `7860` for local and Spaces use.
 4. Leave `FRONTEND_URL` and `PUBLIC_API_BASE_URL` blank when using the dashboard on the API's origin. No Supabase or PostgreSQL setup is needed for this demo.
 
 Free tiers may sleep while idle, so the first request after inactivity can have a cold start.
@@ -45,7 +45,7 @@ Free tiers may sleep while idle, so the first request after inactivity can have 
    Copy-Item .env.example .env
    ```
 
-3. Keep `DEMO_MODE=true` for the fictional sample dataset. Do not put real secrets in source control. Set `JWT_SECRET_KEY` to a random value of at least 32 characters before deploying.
+3. Keep `AUTO_SEED_DEMO_DATA=false` for a clean local database. Set it to `true` only when you explicitly want fictional sample records in a local demonstration. Do not put real secrets in source control. Set `JWT_SECRET_KEY` to a random value of at least 32 characters before deploying.
 4. Start the dashboard and API:
 
    ```powershell
@@ -54,7 +54,7 @@ Free tiers may sleep while idle, so the first request after inactivity can have 
 
 5. Open <http://127.0.0.1:8000>. API documentation is at <http://127.0.0.1:8000/docs> in development. Health is at `/api/health`. Run the install, startup, and script commands from the repository root so `.env` and the default SQLite database stay there.
 
-The demo seed inserts into empty tables only; it never deletes or replaces rows. To initialize/seed explicitly, run `python -m backend.scripts.seed_demo` after setting `.env`.
+The optional demo seed inserts into empty tables only; it never deletes or replaces rows. The app does not run it automatically. To initialize sample rows explicitly, run `python -m backend.scripts.seed_demo` after setting `.env`.
 
 ## Public Indian military aviation inventory estimates
 
@@ -135,11 +135,13 @@ Model preprocessing, training, holdout evaluation, and inference run in the Pyth
 python -m backend.scripts.train_maintenance_model
 ```
 
-The generated `backend/models/maintenance_demo.joblib` is ignored by Git. The runtime verifies that its recorded dataset SHA-256 matches the current CSV; missing, invalid, or stale artifacts are reported as unavailable. APIs are `GET /api/ml/status`, `GET /api/ml/dataset-summary`, `GET /api/ml/evaluation`, and `POST /api/ml/predict`. Dashboard reads follow the same demo-mode/authentication policy as other operational reads. AI Decision Support retrieves ML results through backend functions and returns deterministic verified figures for ML questions; it does not pass those questions to Gemini or fabricate results. Its ML responses are explicitly marked as backend ML analytics.
+The generated `backend/models/maintenance_demo.joblib` is ignored by Git. The runtime verifies that its recorded dataset SHA-256 matches the current CSV; missing, invalid, or stale artifacts are reported as unavailable. APIs are `GET /api/ml/status`, `GET /api/ml/dataset-summary`, `GET /api/ml/evaluation`, and `POST /api/ml/predict`; all require authentication. AI Decision Support retrieves ML results through backend functions and returns deterministic verified figures for ML questions; it does not pass those questions to Gemini or fabricate results. Its ML responses are explicitly marked as backend ML analytics.
 
 The Docker image trains `maintenance_demo.joblib` from the supplied CSV at build time. This keeps the classifier available after deployment even though its generated local artifact is not tracked by Git.
 
 The AI Decision Analyzer routes greetings, thanks, empty input, and unrelated questions before loading the dashboard snapshot or calling Gemini. Relevant questions use a fresh backend-generated snapshot; client-provided metrics are ignored. Simple aircraft count, availability, and readiness questions lead with a direct answer calculated from that snapshot, followed by the related metrics. Calculated values include their backend basis and snapshot timestamp in the response. Each response labels its source (`Gemini AI`, `Rule-based fallback`, or `Intent handler`) and reports whether Gemini was configured and actually used; a rule-based response never claims that Gemini was used. Missing snapshot values are reported as unavailable rather than inferred. No new configuration is required.
+
+The ML Analytics view checks `/api/health`, `/api/ml/status`, `/api/ml/dataset-summary`, and `/api/ml/evaluation` and labels unavailable data instead of substituting zeros. The prediction form accepts only categories present in the checked dataset and the backend validates numeric ranges and artifact feature order. Prediction results include the model version but no confidence score because the synthetic Random Forest probabilities have not been calibrated. A prediction is a demonstration output, not a maintenance diagnosis or airworthiness decision.
 
 ## Dashboard metric definitions
 
@@ -156,7 +158,7 @@ Aircraft and crew duplicates are normalized by trimmed, case-insensitive busines
 
 SQLite creates required tables and these indexes on startup. Before PostgreSQL deployment, inspect duplicates and apply the reviewed SQL migrations in order, including `004_weather_provenance.sql` and `005_normalized_identifier_uniqueness.sql`. This project currently has no migration ledger, so schema checks cannot prove which historical SQL files were applied; verify required columns and indexes directly. Never delete duplicate or legacy audit rows automatically to make a unique index apply.
 
-Self-registration creates viewer accounts only. Assign `admin` or `analyst` to a profile through a trusted administrator-controlled database action; never accept a role from the registration request. Access tokens are short lived. Logout is stateless: the client discards its bearer token. Operational database reads require authentication whenever demo mode is off; they remain public only for the explicitly fictional local demo. Elevated writes require analyst/admin. Reports are visible to their creator; admins can review all reports.
+Self-registration creates viewer accounts only. Assign `admin` or `analyst` to a profile through a trusted administrator-controlled database action; never accept a role from the registration request. Access tokens are short lived. Logout is stateless: the client discards its bearer token. Dashboard reads, analytics, fleet services, and writes require authentication in every mode. Elevated writes require analyst/admin. Reports are visible to their creator; admins can review all reports.
 
 Sensitive-route throttling is in-process and protects against simple repeated attempts. For a multi-instance production deployment, also apply edge/API rate limits at the hosting layer.
 
@@ -200,7 +202,7 @@ flowchart LR
 
 ## Quick demo
 
-Run `make demo` (or `docker compose up --build`) and open [http://localhost:8000/fleet](http://localhost:8000/fleet). The existing dashboard remains at `/`. In local demo mode the synthetic graph and planning endpoints are open; registration and role-protected existing operations continue to use the existing JWT login flow.
+Run `make demo` (or `docker compose up --build`) and open [http://localhost:8000/fleet](http://localhost:8000/fleet). Sign in or create a viewer account to access dashboard pages and APIs. Fleet graph and planning results remain synthetic examples and must not be used as operational assessments.
 
 `python -m backend.scripts.show_snag_mappings` prints five noisy snag mappings and similarity scores. `python -m backend.scripts.simulate_maintenance` prints deterministic before/after fictional availability and AOG KPIs.
 

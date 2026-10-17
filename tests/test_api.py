@@ -11,6 +11,7 @@ from types import SimpleNamespace
 TEST_DB = Path(tempfile.gettempdir()) / f"aerointel_test_{uuid.uuid4().hex}.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["DEMO_MODE"] = "true"
+os.environ["AUTO_SEED_DEMO_DATA"] = "true"
 os.environ["APP_ENV"] = "test"
 os.environ["JWT_SECRET_KEY"] = "test-only-secret-with-at-least-32-characters"
 
@@ -38,6 +39,12 @@ from sqlalchemy import select
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as test_client:
+        login = test_client.post("/api/auth/register", json={
+            "email": "integration-reader@example.com",
+            "password": "integration-reader-passphrase",
+        })
+        assert login.status_code == 201
+        test_client.headers["Authorization"] = f"Bearer {login.json()['data']['access_token']}"
         yield test_client
     engine.dispose()
     if TEST_DB.exists():
@@ -98,11 +105,11 @@ def test_production_cors_excludes_development_origins():
     assert main.cors_origins_for(SimpleNamespace(frontend_url="http://127.0.0.1:8000"), True) == set()
 
 
-def test_operational_reads_require_auth_outside_demo(client, monkeypatch):
-    import backend.app.main as main
-    monkeypatch.setattr(main.settings, "demo_mode", False)
-    for route in ("/api/dashboard/summary", "/api/aircraft", "/api/crew", "/api/maintenance", "/api/schedules", "/api/alerts", "/api/activity", "/api/analytics/trends"):
+def test_operational_reads_require_auth_even_in_demo(client):
+    token = client.headers.pop("Authorization")
+    for route in ("/api/dashboard/summary", "/api/aircraft", "/api/crew", "/api/maintenance", "/api/schedules", "/api/alerts", "/api/activity", "/api/analytics/trends", "/api/weather/current", "/api/public-inventory", "/api/ml/status"):
         assert client.get(route).status_code == 401, route
+    client.headers["Authorization"] = token
     user = client.post("/api/auth/register", json={"email":"ops-reader@example.com", "password":"ops-reader-passphrase"}).json()["data"]
     headers = {"Authorization":f"Bearer {user['access_token']}"}
     assert client.get("/api/aircraft", headers=headers).status_code == 200
@@ -137,8 +144,10 @@ def test_registration_login_and_server_assigned_viewer_role(client):
 
 
 def test_role_protected_alert_write(client):
+    token = client.headers.pop("Authorization")
     assert client.post("/api/alerts", json={"severity":"low", "category":"Demo", "message":"Guest write"}).status_code == 401
     assert client.get("/api/reports").status_code == 401
+    client.headers["Authorization"] = token
     registration = client.post("/api/auth/register", json={"email":"viewer@example.com", "password":"another-strong-passphrase"}).json()
     token = registration["data"]["access_token"]
     response = client.post("/api/alerts", headers={"Authorization":f"Bearer {token}"}, json={"severity":"low", "category":"Demo", "message":"A test alert"})
@@ -675,13 +684,12 @@ def test_ml_endpoints_expose_validated_synthetic_results(client):
         assert prediction.json()["data"]["predicted_demo_label"] in {"Low", "Medium", "High"}
         assert prediction.json()["data"]["notice"] == "SYNTHETIC DEMO DATA — NOT FOR OPERATIONAL USE"
 
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(main.settings, "demo_mode", False)
+    token = client.headers.pop("Authorization")
     try:
         for route in ("/api/ml/status", "/api/ml/dataset-summary", "/api/ml/evaluation"):
             assert client.get(route).status_code == 401
     finally:
-        monkeypatch.undo()
+        client.headers["Authorization"] = token
 
 
 def test_ai_ml_questions_use_verified_backend_results_only(client, monkeypatch):

@@ -1,7 +1,30 @@
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from backend.app.models import Aircraft, Crew, MaintenanceRecord, ScheduleRecord, Alert, WeatherObservation, AuditLog
+
+
+def remove_seeded_demo_data(db: Session) -> int:
+    """Remove only records carrying the exact identifiers used by seed_demo_data."""
+    predicates = (
+        (Aircraft, Aircraft.resource_id.like("DEMO-A-%")),
+        (Crew, Crew.display_id.like("DEMO-C-%")),
+        (MaintenanceRecord, MaintenanceRecord.title.like("Routine inspection · Demo resource %")),
+        (ScheduleRecord, ScheduleRecord.title.like("Administrative readiness review __")),
+        (Alert, Alert.message.in_((
+            "Inspection due · Demo resource A-014",
+            "Moderate wind advisory · Demo east sector",
+            "Sample crew roster confirmation",
+        ))),
+        (WeatherObservation, WeatherObservation.source == "demo"),
+        (AuditLog, AuditLog.action.in_((
+            "demo.readiness_review", "demo.maintenance_scheduled", "demo.weather_advisory",
+        ))),
+    )
+    removed = sum(db.execute(delete(model).where(predicate)).rowcount or 0 for model, predicate in predicates)
+    if removed:
+        db.commit()
+    return removed
 
 
 def seed_demo_data(db: Session) -> None:

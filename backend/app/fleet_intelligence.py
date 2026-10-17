@@ -10,6 +10,7 @@ import math
 import os
 import re
 import time
+import asyncio
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
@@ -19,6 +20,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -27,7 +29,7 @@ from sklearn.ensemble import IsolationForest, RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 
 from backend.app.config import PROJECT_ROOT, get_settings
-from backend.app.database import get_db
+from backend.app.database import SessionLocal, get_db
 from backend.app.models import AuditLog, Profile
 from backend.app.security import bearer, current_user
 
@@ -38,14 +40,10 @@ MODEL_PATH = MODEL_DIR / "fd001_prognostics.joblib"
 
 
 def demo_or_user(credentials=Depends(bearer), db=Depends(get_db)):
-    if get_settings().demo_mode and credentials is None:
-        return None
     return current_user(credentials, db)
 
 
 def planner_access(credentials=Depends(bearer), db=Depends(get_db)):
-    if get_settings().demo_mode and credentials is None:
-        return None
     profile = current_user(credentials, db)
     if profile.role not in {"analyst", "admin"}:
         raise HTTPException(status_code=403, detail="Analyst or admin role required")
@@ -360,23 +358,21 @@ def rag_eval(profile=Depends(demo_or_user)):
 
 @router.websocket("/ws/fleet")
 async def fleet_events(websocket: WebSocket):
-    # Demo stream only; production clients must use HTTP auth and the websocket
-    # gateway should be placed behind the same authenticated reverse proxy.
-    if not get_settings().demo_mode:
-        await websocket.close(code=1008, reason="Fleet demo stream is disabled outside demo mode")
-        return
     await websocket.accept()
     try:
+        message = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+        token = message.get("access_token") if isinstance(message, dict) else None
+        if not isinstance(token, str) or not token:
+            await websocket.close(code=1008, reason="Authentication required")
+            return
+        with SessionLocal() as db:
+            current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), db)
         while True:
-            await websocket.send_json({"type": "fleet_update", "at": datetime.now(timezone.utc).isoformat(), "aircraft": [{"id": t, **g["aircraft"]} for t, g in GRAPH.items()]})
-            tail = AIRCRAFT[int(time.time() // 30) % len(AIRCRAFT)]
-            aircraft = GRAPH[tail]["aircraft"]
-            aircraft["health"] = max(55, round(aircraft["health"] - 4, 1))
-            aircraft["status"] = "fault injected"
-            await websocket.send_json({"type": "demo_fault", "aircraft_id": tail, "message": "Synthetic demo fault injected", "health": aircraft["health"]})
-            await __import__("asyncio").sleep(30)
-    except WebSocketDisconnect:
-        return
+            await websocket.send_json({"type": "fleet_update", "at": datetime.now(timezone.utc).isoformat(), "aircraft": [{"id": tail, **graph["aircraft"]} for tail, graph in GRAPH.items()]})
+            await asyncio.sleep(30)
+    except (asyncio.TimeoutError, HTTPException, WebSocketDisconnect):
+        if not websocket.client_state.DISCONNECTED:
+            await websocket.close(code=1008, reason="Authentication failed or connection expired")
 
 
 def evaluate_fd001(data_dir: Path | None = None) -> dict[str, Any]:
