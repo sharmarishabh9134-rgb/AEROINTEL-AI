@@ -327,7 +327,7 @@ def test_aircraft_questions_report_missing_snapshot_data_without_inventing_value
 
 
 @pytest.mark.parametrize("failure", ["connect", "timeout"])
-def test_weather_provider_failure_does_not_use_persisted_demo_rows(monkeypatch, failure):
+def test_weather_provider_failure_shows_labeled_sample_rows(monkeypatch, failure):
     import httpx
     import backend.app.services as services
     from backend.app.models import WeatherObservation
@@ -346,10 +346,12 @@ def test_weather_provider_failure_does_not_use_persisted_demo_rows(monkeypatch, 
         demo_before = db.query(WeatherObservation).filter_by(source="demo").count()
         result = asyncio.run(services.fetch_weather(12.3456, 45.6789, db))
         demo_after = db.query(WeatherObservation).filter_by(source="demo").count()
-    assert result["source"] == "unavailable"
-    assert result["is_demo"] is False
-    assert result["hourly"] == []
-    assert "no saved provider records" in result["notice"]
+    # Demo mode shows the fictional sample rows, clearly labeled, instead of an empty tab.
+    assert result["source"] == "demo"
+    assert result["is_demo"] is True
+    assert len(result["hourly"]) == 24
+    assert all(row["source"] == "demo" for row in result["hourly"])
+    assert "sample weather" in result["notice"]
     assert demo_before == demo_after == 24
 
 
@@ -358,7 +360,7 @@ def test_weather_provider_failure_does_not_use_persisted_demo_rows(monkeypatch, 
     {"time": "not-a-list"},
     {"time": ["2026-10-11T12:00"], "temperature_2m": []},
 ])
-def test_weather_invalid_provider_payload_is_unavailable_not_live(monkeypatch, hourly):
+def test_weather_invalid_provider_payload_is_never_labeled_live(monkeypatch, hourly):
     import backend.app.services as services
     from backend.app.models import WeatherObservation
 
@@ -379,9 +381,9 @@ def test_weather_invalid_provider_payload_is_unavailable_not_live(monkeypatch, h
         provider_rows = db.query(WeatherObservation).filter_by(
             source="open-meteo", latitude=coordinates[0], longitude=coordinates[1]
         ).count()
-    assert result["source"] == "unavailable"
-    assert result["is_demo"] is False
-    assert result["hourly"] == []
+    assert result["source"] == "demo"
+    assert result["is_demo"] is True
+    assert all(row["source"] == "demo" for row in result["hourly"])
     assert provider_rows == 0
 
 

@@ -296,7 +296,7 @@ async def fetch_weather(latitude: float, longitude: float, db: Session) -> dict:
             # Another request may have inserted the same unique provider point.
             # Clear the failed transaction before reading the committed row.
             db.rollback()
-        logger.warning("Weather provider unavailable (%s)", type(exc).__name__)
+        logger.warning("Weather provider unavailable (%s: %s)", type(exc).__name__, str(exc)[:300])
         history = list(db.scalars(select(WeatherObservation).where(
             WeatherObservation.source == "open-meteo",
             WeatherObservation.latitude == latitude,
@@ -321,6 +321,28 @@ async def fetch_weather(latitude: float, longitude: float, db: Session) -> dict:
                     "location": {"name": settings.open_meteo_location, "latitude": latitude, "longitude": longitude},
                     "units": {"temperature": "°C", "humidity": "%", "precipitation": "mm", "wind_speed": "km/h"},
                     "current": current, "hourly": observations, "fetched_at": last_fetch}
+        if settings.demo_mode:
+            # Demo mode: show the fictional sample weather rows so the tab is never empty.
+            sample = list(db.scalars(select(WeatherObservation).where(WeatherObservation.source == "demo")
+                                     .order_by(WeatherObservation.observed_at.desc()).limit(72)).all())
+            sample_rows = []
+            for observation in reversed(sample):
+                observed_at = observation.observed_at
+                if observed_at.tzinfo is None:
+                    observed_at = observed_at.replace(tzinfo=timezone.utc)
+                sample_rows.append({"timestamp": observed_at.isoformat(), "temperature_2m": observation.temperature_c,
+                                    "relative_humidity_2m": observation.humidity_pct, "wind_speed_10m": observation.wind_kmh,
+                                    "precipitation": observation.precipitation_mm, "source": "demo", "data_type": "demo",
+                                    "latitude": latitude, "longitude": longitude,
+                                    "fetched_at": _iso(observation.fetched_at), "created_at": _iso(observation.created_at)})
+            if sample_rows:
+                now_utc = datetime.now(timezone.utc)
+                sample_current = min(sample_rows, key=lambda item: abs((datetime.fromisoformat(item["timestamp"]) - now_utc).total_seconds()))
+                return {"source": "demo", "is_demo": True, "stale": False,
+                        "notice": "Live Open-Meteo data could not be reached, so fictional sample weather is shown.",
+                        "location": {"name": "Demo region (sample data)", "latitude": latitude, "longitude": longitude},
+                        "units": {"temperature": "°C", "humidity": "%", "precipitation": "mm", "wind_speed": "km/h"},
+                        "current": sample_current, "hourly": sample_rows, "fetched_at": None}
         return {"source": "unavailable", "is_demo": False, "stale": False,
                 "notice": "Open-Meteo is unavailable and no saved provider records exist.",
                 "location": {"name": settings.open_meteo_location, "latitude": latitude, "longitude": longitude},
