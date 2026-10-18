@@ -733,7 +733,7 @@ def test_ml_analytics_page_and_warning_are_in_dashboard(client):
     assert "/api/ml/evaluation" in response.text
 
 
-def test_weather_rate_limit_retries_then_shows_labeled_sample_rows(monkeypatch):
+def test_weather_rate_limit_retries_then_shows_labeled_sample_rows(client, monkeypatch):
     import httpx
     import backend.app.services as services
 
@@ -762,6 +762,54 @@ def test_weather_rate_limit_retries_then_shows_labeled_sample_rows(monkeypatch):
     with SessionLocal() as db:
         first = asyncio.run(services.fetch_weather(*coordinates, db))
         second = asyncio.run(services.fetch_weather(*coordinates, db))
-    assert len(calls) == 3  # one request plus two retries; the cooldown blocks the second call
+    assert len(calls) == 4  # 1st call: Open-Meteo x2 + MET Norway x1; 2nd call: cooldown skips Open-Meteo, MET Norway x1
     assert first["source"] == "demo" and first["is_demo"] is True
     assert second["source"] == "demo"
+
+
+def test_weather_uses_met_norway_when_open_meteo_is_rate_limited(client, monkeypatch):
+    import httpx
+    import backend.app.services as services
+    from backend.app.models import WeatherObservation
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    met_body = {"properties": {"timeseries": [
+        {"time": (now + timedelta(hours=i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+         "data": {"instant": {"details": {"air_temperature": 27.5 + i, "relative_humidity": 55.0, "wind_speed": 2.0}},
+                  "next_1_hours": {"summary": {"symbol_code": "clearsky_day"}, "details": {"precipitation_amount": 0.0}}}}
+        for i in range(-2, 6)]}}
+
+    class Limited:
+        status_code = 429
+        headers = {"Retry-After": "0"}
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("429", request=httpx.Request("GET", "https://x"), response=httpx.Response(429))
+
+    class Good:
+        status_code = 200
+        headers = {}
+        def raise_for_status(self): pass
+        def json(self): return met_body
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        async def get(self, url, *args, **kwargs):
+            return Good() if "api.met.no" in url else Limited()
+
+    async def no_sleep(_seconds): return None
+
+    monkeypatch.setattr(services.httpx, "AsyncClient", lambda **kwargs: Client())
+    monkeypatch.setattr(services.asyncio, "sleep", no_sleep)
+    coordinates = (22.3333, 80.4444)
+    services._weather_cache.pop(coordinates, None)
+    services._weather_failures.pop(coordinates, None)
+    with SessionLocal() as db:
+        result = asyncio.run(services.fetch_weather(*coordinates, db))
+        saved = db.query(WeatherObservation).filter_by(source="met-no", latitude=coordinates[0], longitude=coordinates[1]).count()
+    assert result["source"] == "met-no"
+    assert result["is_demo"] is False and result["stale"] is False
+    assert len(result["hourly"]) == 8
+    assert result["current"]["wind_speed_10m"] == 7.2  # 2.0 m/s converted to km/h
+    assert all(row["source"] == "met-no" for row in result["hourly"])
+    assert saved == 8

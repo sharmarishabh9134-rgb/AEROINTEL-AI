@@ -666,7 +666,7 @@ async def ai_analyze(payload: AnalyzeInput, profile: Profile = Depends(current_u
     snapshot = dashboard_summary(db)
     latest_weather = db.scalar(
         select(WeatherObservation)
-        .where(WeatherObservation.source == "open-meteo", WeatherObservation.fetched_at.is_not(None))
+        .where(WeatherObservation.source.in_(("open-meteo", "met-no")), WeatherObservation.fetched_at.is_not(None))
         .order_by(WeatherObservation.fetched_at.desc(), WeatherObservation.observed_at.desc())
         .limit(1)
     )
@@ -683,7 +683,7 @@ async def ai_analyze(payload: AnalyzeInput, profile: Profile = Depends(current_u
             "database": {"status": "connected", "mode": snapshot["meta"]["data_mode"]},
             "weather": {
                 "status": weather_state,
-                "source": "open-meteo",
+                "source": latest_weather.source,
                 "location": latest_weather.location,
                 "latitude": latest_weather.latitude,
                 "longitude": latest_weather.longitude,

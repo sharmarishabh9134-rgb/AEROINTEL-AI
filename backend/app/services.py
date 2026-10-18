@@ -14,6 +14,7 @@ from backend.app.config import get_settings
 from backend.app.models import Aircraft, Alert, Crew, MaintenanceRecord, ScheduleRecord, WeatherObservation
 
 logger = logging.getLogger("aerointel")
+LIVE_WEATHER_SOURCES = ("open-meteo", "met-no")
 _weather_failures: dict = {}
 _weather_cache: dict[tuple[float, float], tuple[float, dict[str, Any]]] = {}
 
@@ -174,6 +175,10 @@ def weather_source_label(records: list[dict], mode: str) -> str:
         return {"live": "NO LIVE WEATHER DATA", "demo": "NO DEMO DATA", "all": "NO WEATHER DATA"}.get(mode, "NO WEATHER DATA")
     if sources == {"open-meteo"}:
         return "OPEN-METEO FORECAST DATA"
+    if sources == {"met-no"}:
+        return "MET NORWAY FORECAST DATA"
+    if sources <= set(LIVE_WEATHER_SOURCES):
+        return "LIVE FORECAST DATA (OPEN-METEO + MET NORWAY)"
     if sources == {"demo"}:
         return "DEMO DATA"
     return "MIXED SOURCES — NOT LIVE-ONLY"
@@ -192,7 +197,7 @@ def trend_series(db: Session, days: int, mode: str = "live") -> dict:
     settings = get_settings()
     query = select(WeatherObservation).order_by(WeatherObservation.observed_at)
     if mode == "live":
-        query = query.where(WeatherObservation.source == "open-meteo")
+        query = query.where(WeatherObservation.source.in_(LIVE_WEATHER_SOURCES))
     elif mode == "demo":
         query = query.where(WeatherObservation.source == "demo")
     weather = list(db.scalars(query).all())[-days * 24:]
@@ -231,6 +236,69 @@ def trend_series(db: Session, days: int, mode: str = "live") -> dict:
     }}
 
 
+MET_NO_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
+
+
+async def _fetch_met_no(latitude: float, longitude: float, db: Session, key) -> dict | None:
+    """Backup real-time provider (MET Norway, no API key). Returns a payload or None on failure."""
+    settings = get_settings()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0),
+                                     headers={"User-Agent": "AEROINTEL-AI/1.0 github.com/sharmarishabh9134-rgb/AEROINTEL-AI"}) as client:
+            response = await client.get(MET_NO_URL, params={"lat": round(latitude, 4), "lon": round(longitude, 4)})
+            response.raise_for_status()
+        body = response.json()
+        series = body["properties"]["timeseries"]
+        if not isinstance(series, list) or not series:
+            raise ValueError("MET Norway response has no timeseries")
+        fetched_at = datetime.now(timezone.utc)
+        rows = []
+        for entry in series[:72]:
+            observed = datetime.fromisoformat(entry["time"].replace("Z", "+00:00"))
+            details = entry["data"]["instant"]["details"]
+            period = entry["data"].get("next_1_hours") or entry["data"].get("next_6_hours") or {}
+            wind_ms = details.get("wind_speed")
+            rows.append({"timestamp": observed.isoformat(), "temperature_2m": details.get("air_temperature"),
+                         "apparent_temperature": None, "relative_humidity_2m": details.get("relative_humidity"),
+                         "precipitation": (period.get("details") or {}).get("precipitation_amount"), "rain": None,
+                         "wind_speed_10m": round(wind_ms * 3.6, 1) if isinstance(wind_ms, (int, float)) else None,
+                         "wind_gusts_10m": None, "weather_code": None, "visibility": None,
+                         "source": "met-no", "data_type": "forecast" if observed > fetched_at else "historical",
+                         "latitude": latitude, "longitude": longitude,
+                         "fetched_at": fetched_at.isoformat(), "created_at": fetched_at.isoformat()})
+        current = min(rows, key=lambda item: abs((datetime.fromisoformat(item["timestamp"]) - fetched_at).total_seconds()))
+        payload = {"source": "met-no", "is_demo": False, "stale": False,
+                   "notice": "Weather provider forecast data from MET Norway (Open-Meteo was unavailable); not a physical sensor or aircraft measurement.",
+                   "location": {"name": settings.open_meteo_location, "latitude": latitude, "longitude": longitude},
+                   "units": {"temperature": "°C", "humidity": "%", "precipitation": "mm", "wind_speed": "km/h"},
+                   "current": current, "hourly": rows, "fetched_at": fetched_at.isoformat()}
+        try:
+            existing = {o.observed_at.replace(tzinfo=timezone.utc).isoformat(): o for o in db.scalars(select(WeatherObservation).where(
+                WeatherObservation.source == "met-no", WeatherObservation.latitude == latitude,
+                WeatherObservation.longitude == longitude)).all()}
+            for item in rows[:48]:
+                ts = datetime.fromisoformat(item["timestamp"])
+                values = {"location": settings.open_meteo_location, "temperature_c": item["temperature_2m"],
+                          "humidity_pct": item["relative_humidity_2m"], "wind_kmh": item["wind_speed_10m"],
+                          "precipitation_mm": item["precipitation"], "source": "met-no", "data_type": item["data_type"],
+                          "latitude": latitude, "longitude": longitude, "fetched_at": fetched_at}
+                row = existing.get(ts.isoformat())
+                if row:
+                    for name, value in values.items():
+                        setattr(row, name, value)
+                else:
+                    db.add(WeatherObservation(observed_at=ts, created_at=fetched_at, **values))
+            db.commit()
+        except Exception as exc:  # saving history is best effort; the live data is still returned
+            db.rollback()
+            logger.warning("Could not save MET Norway records (%s)", type(exc).__name__)
+        _weather_cache[key] = (time.monotonic(), payload)
+        return payload
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError) as exc:
+        logger.warning("MET Norway weather unavailable (%s: %s)", type(exc).__name__, str(exc)[:300])
+        return None
+
+
 async def fetch_weather(latitude: float, longitude: float, db: Session) -> dict:
     settings = get_settings()
     key = (round(latitude, 4), round(longitude, 4))
@@ -245,9 +313,9 @@ async def fetch_weather(latitude: float, longitude: float, db: Session) -> dict:
             raise ValueError("Weather provider recently failed; waiting before trying again")
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0),
                                      headers={"User-Agent": "AEROINTEL-AI/1.0 (weather dashboard)"}) as client:
-            for attempt in range(3):
+            for attempt in range(2):
                 response = await client.get("https://api.open-meteo.com/v1/forecast", params=params)
-                if getattr(response, "status_code", 200) in (429, 503) and attempt < 2:
+                if getattr(response, "status_code", 200) in (429, 503) and attempt < 1:
                     try:
                         delay = float(response.headers.get("Retry-After", 1))
                     except (TypeError, ValueError):
@@ -314,8 +382,11 @@ async def fetch_weather(latitude: float, longitude: float, db: Session) -> dict:
             db.rollback()
         _weather_failures[key] = time.monotonic()
         logger.warning("Weather provider unavailable (%s: %s)", type(exc).__name__, str(exc)[:300])
+        met_payload = await _fetch_met_no(latitude, longitude, db, key)
+        if met_payload:
+            return met_payload
         history = list(db.scalars(select(WeatherObservation).where(
-            WeatherObservation.source == "open-meteo",
+            WeatherObservation.source.in_(LIVE_WEATHER_SOURCES),
             WeatherObservation.latitude == latitude,
             WeatherObservation.longitude == longitude,
         ).order_by(WeatherObservation.observed_at.desc()).limit(72)).all())
@@ -326,15 +397,15 @@ async def fetch_weather(latitude: float, longitude: float, db: Session) -> dict:
                 observed_at = observed_at.replace(tzinfo=timezone.utc)
             observations.append({"timestamp": observed_at.isoformat(), "temperature_2m": observation.temperature_c,
                                  "relative_humidity_2m": observation.humidity_pct, "wind_speed_10m": observation.wind_kmh,
-                                 "precipitation": observation.precipitation_mm, "source": "open-meteo",
+                                 "precipitation": observation.precipitation_mm, "source": observation.source,
                                  "data_type": observation.data_type or "unknown", "latitude": observation.latitude,
                                  "longitude": observation.longitude, "fetched_at": _iso(observation.fetched_at),
                                  "created_at": _iso(observation.created_at)})
         current = min(observations, key=lambda item: abs((datetime.fromisoformat(item["timestamp"]) - datetime.now(timezone.utc)).total_seconds())) if observations else {}
         last_fetch = max((row["fetched_at"] for row in observations if row["fetched_at"]), default=None)
         if observations:
-            return {"source": "open-meteo", "is_demo": False, "stale": True,
-                    "notice": "Open-Meteo is unavailable; showing saved provider forecasts. These values may be stale.",
+            return {"source": observations[-1]["source"], "is_demo": False, "stale": True,
+                    "notice": "Live weather providers are unavailable; showing saved provider forecasts. These values may be stale.",
                     "location": {"name": settings.open_meteo_location, "latitude": latitude, "longitude": longitude},
                     "units": {"temperature": "°C", "humidity": "%", "precipitation": "mm", "wind_speed": "km/h"},
                     "current": current, "hourly": observations, "fetched_at": last_fetch}
@@ -448,10 +519,10 @@ def _analysis_facts(context: dict) -> list[dict]:
         "timestamp": timestamp,
     })
     weather = sources.get("weather", {})
-    if weather.get("source") == "open-meteo":
+    if weather.get("source") in LIVE_WEATHER_SOURCES:
         measurements = weather.get("measurements", {})
         detail = ", ".join(f"{key}={value}" for key, value in measurements.items() if value is not None) or "weather values unavailable"
-        value = (f"{weather.get('status', 'unknown')} Open-Meteo provider record · {weather.get('data_type', 'type unavailable')} · "
+        value = (f"{weather.get('status', 'unknown')} {'MET Norway' if weather.get('source') == 'met-no' else 'Open-Meteo'} provider record · {weather.get('data_type', 'type unavailable')} · "
                  f"{weather.get('location', 'location unavailable')} ({weather.get('latitude')}, {weather.get('longitude')}) · {detail}")
         source_basis = "Saved provider record; forecast values are not physical sensor measurements. " + weather.get("freshness_rule", "")
     else:
