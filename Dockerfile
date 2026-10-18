@@ -4,7 +4,6 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     APP_ENV=development \
     DEMO_MODE=true \
-    AUTO_SEED_DEMO_DATA=false \
     DATABASE_URL=sqlite:////app/state/aerointel_demo.db \
     PORT=7860 \
     HOME=/home/aero

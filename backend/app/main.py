@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.responses import Response
-from sqlalchemy import inspect, select, text
+from sqlalchemy import inspect, or_, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from backend.app.config import get_settings
@@ -19,7 +19,7 @@ from backend.app.schemas import (AlertCreate, AircraftInput, AircraftUpdate, Ana
 from backend.app.security import bearer, create_access_token, current_user, get_jwt_secret, password_hash, require_roles
 from backend.app.services import analyze, classify_analyzer_intent, dashboard_summary, fetch_weather, rows_as_dict, trend_series
 from backend.app.inventory import filtered_inventory, import_inventory, inventory_summary, load_dataset
-from backend.app.seed import remove_seeded_demo_data, seed_demo_data
+from backend.app.seed import seed_demo_data
 from backend.app.ml_analytics import (NOTICE as ML_NOTICE, assistant_results as ml_assistant_results,
                                       dataset_summary as ml_dataset_summary,
                                       evaluation_metrics as ml_evaluation_metrics,
@@ -125,11 +125,10 @@ def initialize_database():
         if missing_indexes:
             raise RuntimeError("Configured PostgreSQL is missing required indexes: " + ", ".join(missing_indexes) + ". Inspect duplicate business IDs and apply reviewed migrations 004 and 005 before startup.")
     if settings.demo_mode:
+        # Sample data is always loaded in demo mode so every tab has content.
+        # seed_demo_data only fills tables that are empty and never deletes rows.
         with Session(engine) as db:
-            if settings.auto_seed_demo_data and not is_production:
-                seed_demo_data(db)
-            else:
-                remove_seeded_demo_data(db)
+            seed_demo_data(db)
 
 
 @asynccontextmanager
@@ -718,7 +717,8 @@ async def ai_analyze(payload: AnalyzeInput, profile: Profile = Depends(current_u
 def reports(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
     query = select(AnalysisReport).order_by(AnalysisReport.created_at.desc())
     if profile.role != "admin":
-        query = query.where(AnalysisReport.generated_by == profile.id)
+        # Non-admins see their own reports plus shared sample/system reports (no owner).
+        query = query.where(or_(AnalysisReport.generated_by == profile.id, AnalysisReport.generated_by.is_(None)))
     rows = db.scalars(query.offset(offset).limit(limit)).all()
     return {"data": rows_as_dict(rows, omit=("filters_json",)), "meta": {"limit": limit, "offset": offset}}
 

@@ -15,7 +15,7 @@ The main dashboard (`frontend/index.html`) and fleet dashboard (`frontend/fleet.
 
 ## Deploy
 
-The one-service container runs the FastAPI API and both dashboards on the same origin. It defaults to `APP_ENV=development`, SQLite at `/app/state/aerointel_demo.db`, and port `7860`. Sample operational records are not seeded unless `AUTO_SEED_DEMO_DATA=true` is explicitly set for a local demonstration. It needs no Supabase or PostgreSQL service. Keep `FRONTEND_URL` and `PUBLIC_API_BASE_URL` blank for same-origin behavior; CORS is not needed for same-origin browser requests.
+The one-service container runs the FastAPI API and both dashboards on the same origin. It defaults to `APP_ENV=development`, SQLite at `/app/state/aerointel_demo.db`, and port `7860`. Fictional sample operational records are loaded automatically at startup in demo mode, into empty tables only. It needs no Supabase or PostgreSQL service. Keep `FRONTEND_URL` and `PUBLIC_API_BASE_URL` blank for same-origin behavior; CORS is not needed for same-origin browser requests.
 
 ### Hugging Face Spaces
 
@@ -28,7 +28,7 @@ The one-service container runs the FastAPI API and both dashboards on the same o
 
 1. Create a **Web Service** from this repository and select the **Docker** runtime, using the root `Dockerfile`.
 2. Set the health check path to `/api/health`.
-3. Set `APP_ENV=development`, `DEMO_MODE=true`, `AUTO_SEED_DEMO_DATA=false`, `DATABASE_URL=sqlite:////app/state/aerointel_demo.db`, and a strong `JWT_SECRET_KEY` in the Render dashboard. Render supplies `PORT`; the image defaults it to `7860` for local and Spaces use.
+3. Set `APP_ENV=development`, `DEMO_MODE=true`, `DATABASE_URL=sqlite:////app/state/aerointel_demo.db`, and a strong `JWT_SECRET_KEY` in the Render dashboard. Render supplies `PORT`; the image defaults it to `7860` for local and Spaces use.
 4. Leave `FRONTEND_URL` and `PUBLIC_API_BASE_URL` blank when using the dashboard on the API's origin. No Supabase or PostgreSQL setup is needed for this demo.
 
 Free tiers may sleep while idle, so the first request after inactivity can have a cold start.
@@ -45,7 +45,7 @@ Free tiers may sleep while idle, so the first request after inactivity can have 
    Copy-Item .env.example .env
    ```
 
-3. Keep `AUTO_SEED_DEMO_DATA=false` for a clean local database. Set it to `true` only when you explicitly want fictional sample records in a local demonstration. Do not put real secrets in source control. Set `JWT_SECRET_KEY` to a random value of at least 32 characters before deploying.
+3. Fictional sample records load automatically on first start. Do not put real secrets in source control. Set `JWT_SECRET_KEY` to a random value of at least 32 characters before deploying.
 4. Start the dashboard and API:
 
    ```powershell
@@ -54,7 +54,7 @@ Free tiers may sleep while idle, so the first request after inactivity can have 
 
 5. Open <http://127.0.0.1:8000>. API documentation is at <http://127.0.0.1:8000/docs> in development. Health is at `/api/health`. Run the install, startup, and script commands from the repository root so `.env` and the default SQLite database stay there.
 
-The optional demo seed inserts into empty tables only; it never deletes or replaces rows. The app does not run it automatically. To initialize sample rows explicitly, run `python -m backend.scripts.seed_demo` after setting `.env`.
+The demo seed inserts into empty tables only; it never deletes or replaces rows. The app runs it automatically at startup in demo mode.
 
 ## Public Indian military aviation inventory estimates
 

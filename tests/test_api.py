@@ -11,7 +11,6 @@ from types import SimpleNamespace
 TEST_DB = Path(tempfile.gettempdir()) / f"aerointel_test_{uuid.uuid4().hex}.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["DEMO_MODE"] = "true"
-os.environ["AUTO_SEED_DEMO_DATA"] = "true"
 os.environ["APP_ENV"] = "test"
 os.environ["JWT_SECRET_KEY"] = "test-only-secret-with-at-least-32-characters"
 
@@ -446,7 +445,8 @@ def test_authorized_crud_and_schedule_conflict(client):
     report = client.post("/api/reports", headers=headers, json={"report_type":"integration-test","filters":{}})
     assert report.status_code == 201
     assert "confirmed readiness" in report.json()["data"]["summary"]
-    assert len(client.get("/api/reports", headers=headers).json()["data"]) == 1
+    own_reports = client.get("/api/reports", headers=headers).json()["data"]
+    assert len([row for row in own_reports if row["generated_by"] is not None]) == 1
     from backend.app.security import create_access_token
     with SessionLocal() as db:
         viewer_profile = Profile(email="report-viewer@example.com", password_hash="test-only", role="viewer")
@@ -456,7 +456,8 @@ def test_authorized_crud_and_schedule_conflict(client):
         db.commit()
     viewer_reports = client.get("/api/reports", headers={"Authorization":f"Bearer {viewer_token}"})
     assert viewer_reports.status_code == 200
-    assert viewer_reports.json()["data"] == []
+    # Viewers see only shared sample reports (no owner), never reports created by others.
+    assert all(row["generated_by"] is None for row in viewer_reports.json()["data"])
     assert client.delete(f"/api/crew/{crew.json()['data']['id']}", headers=headers).status_code == 204
     assert client.delete(f"/api/maintenance/{maintenance_id}", headers=headers).status_code == 204
     assert client.delete(f"/api/aircraft/{aircraft_id}", headers=headers).status_code == 204

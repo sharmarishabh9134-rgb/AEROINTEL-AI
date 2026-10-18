@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
-from backend.app.models import Aircraft, Crew, MaintenanceRecord, ScheduleRecord, Alert, WeatherObservation, AuditLog
+from backend.app.models import Aircraft, Crew, MaintenanceRecord, ScheduleRecord, Alert, WeatherObservation, AuditLog, AnalysisReport
 
 
 def remove_seeded_demo_data(db: Session) -> int:
@@ -17,6 +17,7 @@ def remove_seeded_demo_data(db: Session) -> int:
             "Sample crew roster confirmation",
         ))),
         (WeatherObservation, WeatherObservation.source == "demo"),
+        (AnalysisReport, AnalysisReport.summary.like("Sample report ·%")),
         (AuditLog, AuditLog.action.in_((
             "demo.readiness_review", "demo.maintenance_scheduled", "demo.weather_advisory",
         ))),
@@ -52,4 +53,11 @@ def seed_demo_data(db: Session) -> None:
     if db.scalar(select(AuditLog.id).limit(1)) is None:
         for action, details, hours in [("demo.readiness_review", "Fictional readiness review completed for demo group", 1), ("demo.maintenance_scheduled", "Fictional routine inspection scheduled for demo resource", 2), ("demo.weather_advisory", "Fictional weather advisory updated for demo region", 3)]:
             db.add(AuditLog(action=action, details=details, created_at=now - timedelta(hours=hours)))
+    if db.scalar(select(AnalysisReport.id).limit(1)) is None:
+        for report_type, summary, hours in [
+            ("Fleet readiness", "Sample report · Fictional readiness snapshot across demo aircraft and crew groups.", 4),
+            ("Maintenance summary", "Sample report · Fictional summary of open, in-progress and completed demo inspections.", 8),
+            ("Weather impact", "Sample report · Fictional weather advisory review for the demo region.", 12),
+        ]:
+            db.add(AnalysisReport(report_type=report_type, filters_json="{}", summary=summary, generated_by=None, created_at=now - timedelta(hours=hours)))
     db.commit()
