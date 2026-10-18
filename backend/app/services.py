@@ -14,6 +14,7 @@ from backend.app.config import get_settings
 from backend.app.models import Aircraft, Alert, Crew, MaintenanceRecord, ScheduleRecord, WeatherObservation
 
 logger = logging.getLogger("aerointel")
+_weather_failures: dict = {}
 _weather_cache: dict[tuple[float, float], tuple[float, dict[str, Any]]] = {}
 
 
@@ -238,9 +239,24 @@ async def fetch_weather(latitude: float, longitude: float, db: Session) -> dict:
         return cached[1]
     params = {"latitude": latitude, "longitude": longitude, "hourly": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,rain,wind_speed_10m,wind_gusts_10m,weather_code,visibility", "forecast_days": 3, "past_days": 1, "timezone": "UTC"}
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
-            response = await client.get("https://api.open-meteo.com/v1/forecast", params=params)
+        failed_at = _weather_failures.get(key)
+        if failed_at and time.monotonic() - failed_at < 30:
+            # The provider just refused us (often HTTP 429 on shared hosting IPs); don't hammer it.
+            raise ValueError("Weather provider recently failed; waiting before trying again")
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0),
+                                     headers={"User-Agent": "AEROINTEL-AI/1.0 (weather dashboard)"}) as client:
+            for attempt in range(3):
+                response = await client.get("https://api.open-meteo.com/v1/forecast", params=params)
+                if getattr(response, "status_code", 200) in (429, 503) and attempt < 2:
+                    try:
+                        delay = float(response.headers.get("Retry-After", 1))
+                    except (TypeError, ValueError):
+                        delay = 1.0
+                    await asyncio.sleep(min(max(delay, 1.0), 3.0))
+                    continue
+                break
             response.raise_for_status()
+        _weather_failures.pop(key, None)
         body = response.json()
         if not isinstance(body, dict):
             raise ValueError("Weather response was not a JSON object")
@@ -296,6 +312,7 @@ async def fetch_weather(latitude: float, longitude: float, db: Session) -> dict:
             # Another request may have inserted the same unique provider point.
             # Clear the failed transaction before reading the committed row.
             db.rollback()
+        _weather_failures[key] = time.monotonic()
         logger.warning("Weather provider unavailable (%s: %s)", type(exc).__name__, str(exc)[:300])
         history = list(db.scalars(select(WeatherObservation).where(
             WeatherObservation.source == "open-meteo",

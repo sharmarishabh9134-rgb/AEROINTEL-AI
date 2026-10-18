@@ -731,3 +731,37 @@ def test_ml_analytics_page_and_warning_are_in_dashboard(client):
     assert "ML Analytics" in response.text
     assert "SYNTHETIC DEMO DATA — NOT FOR OPERATIONAL USE" in response.text
     assert "/api/ml/evaluation" in response.text
+
+
+def test_weather_rate_limit_retries_then_shows_labeled_sample_rows(monkeypatch):
+    import httpx
+    import backend.app.services as services
+
+    calls = []
+
+    class RateLimited:
+        status_code = 429
+        headers = {"Retry-After": "0"}
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("429", request=httpx.Request("GET", "https://x"), response=httpx.Response(429))
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        async def get(self, *args, **kwargs):
+            calls.append(1)
+            return RateLimited()
+
+    async def no_sleep(_seconds): return None
+
+    monkeypatch.setattr(services.httpx, "AsyncClient", lambda **kwargs: Client())
+    monkeypatch.setattr(services.asyncio, "sleep", no_sleep)
+    coordinates = (21.1111, 79.2222)
+    services._weather_cache.pop(coordinates, None)
+    services._weather_failures.pop(coordinates, None)
+    with SessionLocal() as db:
+        first = asyncio.run(services.fetch_weather(*coordinates, db))
+        second = asyncio.run(services.fetch_weather(*coordinates, db))
+    assert len(calls) == 3  # one request plus two retries; the cooldown blocks the second call
+    assert first["source"] == "demo" and first["is_demo"] is True
+    assert second["source"] == "demo"
