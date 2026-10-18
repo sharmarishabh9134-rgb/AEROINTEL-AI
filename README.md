@@ -28,8 +28,9 @@ The one-service container runs the FastAPI API and both dashboards on the same o
 
 1. Create a **Web Service** from this repository and select the **Docker** runtime, using the root `Dockerfile`.
 2. Set the health check path to `/api/health`.
-3. Set `APP_ENV=development`, `DEMO_MODE=true`, `AUTO_SEED_DEMO_DATA=false`, `DATABASE_URL=sqlite:////app/state/aerointel_demo.db`, and a strong `JWT_SECRET_KEY` in the Render dashboard. Render supplies `PORT`; the image defaults it to `7860` for local and Spaces use.
-4. Leave `FRONTEND_URL` and `PUBLIC_API_BASE_URL` blank when using the dashboard on the API's origin. No Supabase or PostgreSQL setup is needed for this demo.
+3. **Do not use the image's SQLite default for a public Render deployment.** Free Render services have an ephemeral filesystem, so the SQLite database, including registered accounts, is discarded on spin-down, restart, or redeploy. That makes a valid password look incorrect after the profile disappears. Use a persistent PostgreSQL database by setting `DATABASE_URL`, `APP_ENV=production`, `DEMO_MODE=false`, `AUTO_SEED_DEMO_DATA=false`, and a strong random `JWT_SECRET_KEY`. Render supplies `PORT`; the image defaults it to `7860` for local and Spaces use.
+4. Before connecting PostgreSQL, inspect its schema with `python -m backend.scripts.inspect_database` and apply only reviewed migrations needed by that existing schema. The production API requires PostgreSQL and never seeds synthetic demo data. A persistent disk mounted at `/app/state` is an alternative only for a single-instance service on a plan that supports disks; do not use it when scaling to multiple instances.
+5. Leave `FRONTEND_URL` and `PUBLIC_API_BASE_URL` blank when using the dashboard on the API's origin. Keep all database credentials in Render environment settings, never in frontend configuration.
 
 Free tiers may sleep while idle, so the first request after inactivity can have a cold start.
 
