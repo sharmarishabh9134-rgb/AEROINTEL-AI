@@ -210,7 +210,9 @@ def rate_limit(request: Request, key: str, maximum: int = 10, window_seconds: in
 
 
 def operational_read_access(credentials=Depends(bearer), db: Session = Depends(get_db)):
-    return current_user(credentials, db)
+    # The dashboard is public and read-only. If a caller supplies a token, still
+    # validate it so expired or forged credentials are not silently accepted.
+    return current_user(credentials, db) if credentials else None
 
 
 def selected_date_window(days: int) -> tuple[datetime, datetime]:
@@ -401,10 +403,12 @@ def official_aviation_disclosures(
 
 @app.get("/api/aircraft")
 def aircraft(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), days: int = Query(7), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
-    since, _ = selected_date_window(days)
-    query = select(Aircraft).where(Aircraft.updated_at >= since).order_by(Aircraft.resource_id)
+    # Aircraft availability is a current fleet snapshot, not an event stream.
+    # Keep older aircraft records visible when the user changes the event range.
+    selected_date_window(days)  # validate the shared range selector
+    query = select(Aircraft).order_by(Aircraft.resource_id)
     rows = db.scalars(query.offset(offset).limit(limit)).all()
-    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset, "days": days, "date_field": "updated_at", "timezone": "UTC", "data_mode": "demo" if settings.demo_mode else "database"}}
+    return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset, "days": days, "scope": "current fleet snapshot", "timezone": "UTC", "data_mode": "demo" if settings.demo_mode else "database"}}
 
 
 @app.post("/api/aircraft", status_code=201)
@@ -450,8 +454,10 @@ def delete_aircraft(aircraft_id: int, profile: Profile = Depends(require_roles("
 
 @app.get("/api/crew")
 def crew(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), days: int = Query(7), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
-    since, _ = selected_date_window(days)
-    query = select(Crew).where(Crew.confirmation_at.is_not(None), Crew.confirmation_at >= since).order_by(Crew.display_id)
+    # Crew readiness is a current roster snapshot; an old confirmation must not
+    # hide a crew member from the roster or make the page appear empty.
+    selected_date_window(days)  # validate the shared range selector
+    query = select(Crew).order_by(Crew.display_id)
     rows = db.scalars(query.offset(offset).limit(limit)).all()
     return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset, "days": days, "date_field": "confirmation_at", "timezone": "UTC"}}
 
@@ -497,7 +503,11 @@ def delete_crew(crew_id: int, profile: Profile = Depends(require_roles("admin"))
 @app.get("/api/maintenance")
 def maintenance(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), days: int = Query(7), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
     since, _ = selected_date_window(days)
-    query = select(MaintenanceRecord).where(MaintenanceRecord.created_at >= since).order_by(MaintenanceRecord.created_at.desc())
+    # Pending maintenance remains operationally relevant even if it was opened
+    # before the selected reporting window; completed history follows the range.
+    query = select(MaintenanceRecord).where(
+        or_(MaintenanceRecord.status.in_(("open", "in_progress", "overdue")), MaintenanceRecord.created_at >= since)
+    ).order_by(MaintenanceRecord.created_at.desc())
     rows = db.scalars(query.offset(offset).limit(limit)).all()
     return {"data": rows_as_dict(rows), "meta": {"limit": limit, "offset": offset, "days": days, "date_field": "created_at", "timezone": "UTC"}}
 
@@ -828,14 +838,16 @@ async def ai_analyze(payload: AnalyzeInput, profile: Profile = Depends(current_u
 
 
 @app.get("/api/reports")
-def reports(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), days: int = Query(7), profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
+def reports(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), days: int = Query(7), profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
     since, _ = selected_date_window(days)
     query = select(AnalysisReport).where(AnalysisReport.created_at >= since).order_by(AnalysisReport.created_at.desc())
-    if profile.role != "admin":
+    if profile is None:
+        query = query.where(AnalysisReport.report_type.in_(("operational_snapshot", "demo_dashboard_snapshot")))
+    elif profile.role != "admin":
         query = query.where(or_(AnalysisReport.generated_by == profile.id,
                                 AnalysisReport.report_type.in_(("operational_snapshot", "demo_dashboard_snapshot"))))
     rows = db.scalars(query.offset(offset).limit(limit)).all()
-    read_scope = "own and shared snapshots" if profile.role != "admin" else "all reports"
+    read_scope = "shared snapshots" if profile is None else "own and shared snapshots" if profile.role != "admin" else "all reports"
     return {"data": rows_as_dict(rows, omit=("filters_json",)), "meta": {"limit": limit, "offset": offset, "days": days, "date_field": "created_at", "timezone": "UTC", "read_scope": read_scope}}
 
 

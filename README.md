@@ -9,7 +9,7 @@ app_port: 7860
 
 # AEROINTEL AI
 
-The responsive dashboard is served by a FastAPI backend. Dashboard and analytics APIs require a signed-in account. New installs do not automatically seed sample operational records. When demo seeding is disabled, startup removes only the exact sample records created by the built-in seed routine and preserves other database rows. The default backend stores records in a local SQLite file at the repository root. Run commands from the repository root; this keeps `.env` and relative SQLite paths anchored there. Configure `DATABASE_URL` with a Supabase PostgreSQL connection string to persist records there.
+The responsive dashboard is served by a FastAPI backend. Dashboard and analytics reads are available without signing in; record changes remain authenticated and role-protected. New installs do not automatically seed sample operational records. When demo seeding is disabled, startup removes only the exact sample records created by the built-in seed routine and preserves other database rows. The default backend stores records in a local SQLite file at the repository root. Run commands from the repository root; this keeps `.env` and relative SQLite paths anchored there. Configure `DATABASE_URL` with a Supabase PostgreSQL connection string to persist records there.
 
 The main dashboard (`frontend/index.html`) and fleet dashboard (`frontend/fleet.html`) are served by the same FastAPI service. The main dashboard API client reads `window.AEROINTEL_CONFIG.apiBaseUrl`; `/api/client-config.js` supplies `PUBLIC_API_BASE_URL`. Leave it blank for same-origin hosting. If you deploy a dashboard on a separate static host, provide its API base URL there and set `FRONTEND_URL` to that site's origin. Keep credentials out of browser configuration.
 
@@ -55,6 +55,12 @@ Free tiers may sleep while idle, so the first request after inactivity can have 
 5. Open <http://127.0.0.1:8000>. API documentation is at <http://127.0.0.1:8000/docs> in development. Health is at `/api/health`. Run the install, startup, and script commands from the repository root so `.env` and the default SQLite database stay there.
 
 The optional demo seed inserts into empty tables only; it never deletes or replaces rows. The app does not run it automatically. To initialize sample rows explicitly, run `python -m backend.scripts.seed_demo` after setting `.env`.
+
+### Start the local sample dashboard
+
+The deployed/configured database and local SQLite demo database are separate. An empty configured database correctly returns empty records; the app does not copy or seed data across databases. On Windows, run `backend/scripts/run_local_demo.ps1` from the repository. It explicitly starts the dashboard against `aerointel_demo.db`, where fictional sample records are labeled `SYNTHETIC DEMO`, and seeds only empty tables. It does not rewrite `.env` or connect to the configured PostgreSQL database. Open <http://127.0.0.1:8000> (do not open `frontend/index.html` as a `file://` page, because API calls need the FastAPI origin). Stop the local server with Ctrl+C.
+
+The dashboard separates these sample records from the **Public Fleet Estimates**, **Official Government Disclosures**, and **Official References** pages. Government sources are background references; they do not verify operational aircraft, crew, maintenance, or schedule records. Never seed synthetic records into production. Add reviewed operational records only through an authorized workflow in the configured database.
 
 ## Public Indian military aviation inventory estimates
 
@@ -207,7 +213,7 @@ flowchart LR
 
 ## Quick demo
 
-Run `make demo` (or `docker compose up --build`) and open [http://localhost:8000/fleet](http://localhost:8000/fleet). Sign in or create a viewer account to access dashboard pages and APIs. Fleet graph and planning results remain synthetic examples and must not be used as operational assessments.
+Run `make demo` (or `docker compose up --build`) and open [http://localhost:8000/fleet](http://localhost:8000/fleet). Open the dashboard to browse read-only data without signing in. Sign in only for protected actions. Fleet graph and planning results remain synthetic examples and must not be used as operational assessments.
 
 `python -m backend.scripts.show_snag_mappings` prints five noisy snag mappings and similarity scores. `python -m backend.scripts.simulate_maintenance` prints deterministic before/after fictional availability and AOG KPIs.
 

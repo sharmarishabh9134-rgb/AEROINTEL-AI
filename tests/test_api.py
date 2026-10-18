@@ -116,6 +116,23 @@ def test_dashboard_page_endpoints_have_seeded_rows_and_period_filters(client):
         Path(temp_engine.url.database).unlink(missing_ok=True)
 
 
+def test_current_aircraft_and_crew_rosters_keep_older_records_visible(client):
+    from backend.app.models import Aircraft, Crew
+
+    cutoff_old = datetime.now(timezone.utc) - timedelta(days=120)
+    aircraft_id = f"OLD-A-{uuid.uuid4().hex[:8]}"
+    crew_id = f"OLD-C-{uuid.uuid4().hex[:8]}"
+    with SessionLocal() as db:
+        db.add(Aircraft(resource_id=aircraft_id, category="Transport", availability_status="available",
+                        maintenance_status="clear", updated_at=cutoff_old))
+        db.add(Crew(display_id=crew_id, group_name="Current roster", readiness_status="ready",
+                    confirmation_at=cutoff_old))
+        db.commit()
+
+    assert aircraft_id in {row["resource_id"] for row in client.get("/api/aircraft?days=1").json()["data"]}
+    assert crew_id in {row["display_id"] for row in client.get("/api/crew?days=1").json()["data"]}
+
+
 def test_public_aviation_provider_failure_uses_labelled_fallback(client, monkeypatch):
     import backend.app.main as main
     from backend.app.models import ScheduleRecord
@@ -172,14 +189,14 @@ def test_production_cors_excludes_development_origins():
     assert main.cors_origins_for(SimpleNamespace(frontend_url="http://127.0.0.1:8000"), True) == set()
 
 
-def test_operational_reads_require_auth_even_in_demo(client):
+def test_dashboard_reads_are_public_while_writes_remain_protected(client):
     token = client.headers.pop("Authorization")
-    for route in ("/api/dashboard/summary", "/api/aircraft", "/api/crew", "/api/maintenance", "/api/schedules", "/api/alerts", "/api/activity", "/api/analytics/trends", "/api/weather/current", "/api/public-inventory", "/api/ml/status"):
-        assert client.get(route).status_code == 401, route
-    client.headers["Authorization"] = token
-    user = client.post("/api/auth/register", json={"email":"ops-reader@example.com", "password":"ops-reader-passphrase"}).json()["data"]
-    headers = {"Authorization":f"Bearer {user['access_token']}"}
-    assert client.get("/api/aircraft", headers=headers).status_code == 200
+    try:
+        for route in ("/api/dashboard/summary", "/api/aircraft", "/api/crew", "/api/maintenance", "/api/schedules", "/api/alerts", "/api/activity", "/api/analytics/trends", "/api/weather/current", "/api/public-inventory", "/api/ml/status", "/api/reports"):
+            assert client.get(route).status_code == 200, route
+        assert client.post("/api/alerts", json={"severity":"low", "category":"Demo", "message":"Guest write"}).status_code == 401
+    finally:
+        client.headers["Authorization"] = token
 
 
 def test_production_rejects_sqlite_database(client, monkeypatch):
@@ -213,7 +230,7 @@ def test_registration_login_and_server_assigned_viewer_role(client):
 def test_role_protected_alert_write(client):
     token = client.headers.pop("Authorization")
     assert client.post("/api/alerts", json={"severity":"low", "category":"Demo", "message":"Guest write"}).status_code == 401
-    assert client.get("/api/reports").status_code == 401
+    assert client.get("/api/reports").status_code == 200
     client.headers["Authorization"] = token
     registration = client.post("/api/auth/register", json={"email":"viewer@example.com", "password":"another-strong-passphrase"}).json()
     token = registration["data"]["access_token"]
