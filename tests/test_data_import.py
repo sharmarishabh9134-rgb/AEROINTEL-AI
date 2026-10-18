@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from backend.app.database import SessionLocal
 from backend.app.models import Aircraft, Profile, MaintenanceRecord, ScheduleRecord, Alert
@@ -17,7 +18,10 @@ def analyst_headers():
 
 
 def upload(client, headers, route, dataset_type, filename, content):
-    return client.post(route, headers=headers, data={"dataset_type": dataset_type},
+    data = {"dataset_type": dataset_type}
+    if route.endswith("/commit"):
+        data["confirm_import"] = "true"
+    return client.post(route, headers=headers, data=data,
                        files={"file": (filename, content, "text/csv")})
 
 
@@ -53,10 +57,69 @@ def test_imports_support_maintenance_flights_and_alerts(client):
         db.commit()
     maintenance = f"aircraft_resource_id,title,status\n{aircraft_id},Import inspection {uuid.uuid4().hex[:6]},open\n".encode()
     assert upload(client, headers, "/api/imports/commit", "maintenance", "maint.csv", maintenance).status_code == 201
-    schedule = f"title,category,starts_at,aircraft_resource_id\nImport Flight {uuid.uuid4().hex[:6]},Flight,2027-01-01T10:00:00Z,{aircraft_id}\n".encode()
+    schedule_title = f"Import Flight {uuid.uuid4().hex[:6]}"
+    starts_at = (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0).isoformat()
+    schedule = f"title,category,starts_at,aircraft_resource_id\n{schedule_title},Flight,{starts_at},{aircraft_id}\n".encode()
     assert upload(client, headers, "/api/imports/commit", "flights", "flights.csv", schedule).status_code == 201
     alert = f"severity,category,message\nlow,Import test,Import alert {uuid.uuid4().hex[:8]}\n".encode()
     assert upload(client, headers, "/api/imports/commit", "alerts", "alerts.csv", alert).status_code == 201
+    assert any(row["title"].startswith("Import inspection") for row in client.get("/api/maintenance?days=30", headers=headers).json()["data"])
+    assert any(row["title"] == schedule_title for row in client.get("/api/schedules?days=7", headers=headers).json()["data"])
+    assert any(row["message"].startswith("Import alert") for row in client.get("/api/alerts?days=30", headers=headers).json()["data"])
+    summary = client.get("/api/dashboard/summary", headers=headers).json()["data"]
+    assert summary["maintenance_open"] > 0
+    assert summary["schedule_active"] > 0
+    assert summary["alerts_open"] > 0
+
+
+def test_crew_csv_import_is_validated_deduplicated_and_visible_on_dashboard(client):
+    headers = analyst_headers()
+    display_id = f"CREW-{uuid.uuid4().hex[:8].upper()}"
+    csv = ("display_id,group_name,readiness_status,display_name,role,license_rating,duty_hours,rest_hours,medical_expiry,currency_expiry\n"
+           f"{display_id},Demo Flight,ready,Sample Crew,Flight crew,Type rated,4.5,12,2027-06-01T00:00:00Z,2027-05-01T00:00:00Z\n").encode()
+    before = client.get("/api/dashboard/summary", headers=headers).json()["data"]["crew_total"]
+    preview = upload(client, headers, "/api/imports/preview", "crew", "crew.csv", csv)
+    assert preview.status_code == 200
+    assert preview.json()["data"]["will_import"] == 1
+    assert preview.json()["data"]["rejected"] == 0
+    committed = upload(client, headers, "/api/imports/commit", "crew", "crew.csv", csv)
+    assert committed.status_code == 201
+    assert committed.json()["data"] == {
+        "dataset_type": "crew", "inserted": 1, "skipped": 0, "rejected": 0, "failed": 0,
+        "policy": "Insert new records; skip matches by business identifier/natural key. No updates are performed.",
+    }
+    rows = client.get("/api/crew", headers=headers).json()["data"]
+    stored = next(row for row in rows if row["display_id"] == display_id)
+    assert stored["duty_hours"] == 4.5
+    assert stored["is_demo"] is False
+    assert stored["data_origin"] == "upload"
+    assert client.get("/api/dashboard/summary", headers=headers).json()["data"]["crew_total"] == before + 1
+    duplicate = upload(client, headers, "/api/imports/preview", "crew", "crew.csv", csv)
+    assert duplicate.json()["data"]["will_skip"] == 1
+    assert upload(client, headers, "/api/imports/commit", "crew", "crew.csv", csv).json()["data"]["skipped"] == 1
+
+
+def test_downloadable_templates_match_import_schema(client):
+    import csv
+    import io
+    from backend.app.data_import import SCHEMAS
+
+    for dataset_type, schema in SCHEMAS.items():
+        response = client.get(f"/api/imports/templates/{dataset_type}.csv")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/csv")
+        assert next(csv.reader(io.StringIO(response.text))) == schema["fields"]
+
+
+def test_commit_requires_explicit_confirmation(client):
+    headers = analyst_headers()
+    resource_id = f"CONFIRM-{uuid.uuid4().hex[:8].upper()}"
+    content = f"resource_id,category,availability_status,maintenance_status\n{resource_id},Transport,available,clear\n".encode()
+    response = client.post("/api/imports/commit", headers=headers, data={"dataset_type": "aircraft"},
+                           files={"file": ("aircraft.csv", content, "text/csv")})
+    assert response.status_code == 400
+    rows = client.get("/api/aircraft", headers=headers).json()["data"]
+    assert all(row["resource_id"] != resource_id for row in rows)
 
 
 def test_import_rejects_invalid_files_missing_columns_and_dates(client):
@@ -69,6 +132,9 @@ def test_import_rejects_invalid_files_missing_columns_and_dates(client):
     bad_date = upload(client, headers, "/api/imports/preview", "flights", "dates.csv",
                       b"title,category,starts_at\nTest Flight,Flight,not-a-date\n")
     assert bad_date.json()["data"]["error_count"] == 1
+    bad_crew_date = upload(client, headers, "/api/imports/preview", "crew", "crew.csv",
+                           b"display_id,group_name,readiness_status,medical_expiry\nCREW-BAD,Demo,ready,not-a-date\n")
+    assert bad_crew_date.json()["data"]["rejected"] == 1
 
 
 def test_import_unknown_aircraft_reference_is_rejected_before_commit(client):
@@ -85,7 +151,14 @@ def test_import_unknown_aircraft_reference_is_rejected_before_commit(client):
 
 
 def test_import_transaction_rolls_back_records_inserted_before_a_commit_failure():
-    with SessionLocal() as db:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from backend.app.models import Base
+
+    isolated_engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(isolated_engine)
+    IsolatedSession = sessionmaker(bind=isolated_engine, expire_on_commit=False)
+    with IsolatedSession() as db:
         aircraft = Aircraft(resource_id=f"ROLL-{uuid.uuid4().hex[:8]}", category="Transport",
                             availability_status="available", maintenance_status="clear")
         db.add(aircraft)
@@ -108,6 +181,7 @@ def test_import_transaction_rolls_back_records_inserted_before_a_commit_failure(
         else:
             raise AssertionError("The removed aircraft reference should fail the commit.")
         assert db.query(ScheduleRecord).filter(ScheduleRecord.title == title).count() == 0
+    isolated_engine.dispose()
 
 
 def test_import_authorization_and_upload_size_limit(client):

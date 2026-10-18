@@ -31,4 +31,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
     CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.getenv('PORT','7860')+'/api/health', timeout=4)" || exit 1
 
 USER 1000:1000
-CMD if [ -z "${JWT_SECRET_KEY:-}" ]; then JWT_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"; export JWT_SECRET_KEY; echo "JWT_SECRET_KEY was empty; generated a random key for this container."; fi; python -c 'from backend.app.database import Base, engine; Base.metadata.create_all(bind=engine)' && exec uvicorn backend.app.main:app --host 0.0.0.0 --port "${PORT:-7860}"
+CMD ["sh", "-c", "exec uvicorn backend.app.main:app --host 0.0.0.0 --port \"${PORT:-7860}\""]

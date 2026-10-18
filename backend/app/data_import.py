@@ -16,8 +16,8 @@ from pydantic import ValidationError
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session
 
-from backend.app.models import Aircraft, Alert, AuditLog, MaintenanceRecord, ScheduleRecord
-from backend.app.schemas import AircraftInput, MaintenanceInput, ScheduleInput, AlertCreate
+from backend.app.models import Aircraft, Alert, AuditLog, Crew, MaintenanceRecord, ScheduleRecord
+from backend.app.schemas import AircraftInput, AlertCreate, CrewInput, MaintenanceInput, ScheduleInput
 
 MAX_FILE_BYTES = 5 * 1024 * 1024
 MAX_ROWS = 2000
@@ -27,6 +27,10 @@ SCHEMAS = {
     "aircraft": {
         "required": ["resource_id", "category", "availability_status", "maintenance_status"],
         "fields": ["resource_id", "category", "availability_status", "maintenance_status", "registration", "aircraft_type", "base_airport", "readiness_confirmation", "notes", "next_maintenance_due", "hours_since_check"],
+    },
+    "crew": {
+        "required": ["display_id", "group_name", "readiness_status"],
+        "fields": ["display_id", "group_name", "readiness_status", "display_name", "role", "license_rating", "duty_hours", "rest_hours", "medical_expiry", "currency_expiry"],
     },
     "maintenance": {
         "required": ["title", "status"],
@@ -48,8 +52,16 @@ ALIASES = {"flights_schedules": "flights", "schedules": "flights"}
 def canonical_type(value: str) -> str:
     value = ALIASES.get((value or "").strip().lower(), (value or "").strip().lower())
     if value not in SCHEMAS:
-        raise ValueError("Dataset type must be Aircraft, Maintenance, Flights/Schedules, or Alerts.")
+        raise ValueError("Dataset type must be Aircraft, Crew, Maintenance, Flights/Schedules, or Alerts.")
     return value
+
+
+def template_csv(dataset_type: str) -> str:
+    """Return a header-only CSV template derived from the import schema."""
+    dataset_type = canonical_type(dataset_type)
+    output = io.StringIO(newline="")
+    csv.writer(output, lineterminator="\n").writerow(SCHEMAS[dataset_type]["fields"])
+    return output.getvalue()
 
 
 def _read_grid(filename: str, content: bytes) -> tuple[list[str], list[list[Any]]]:
@@ -205,20 +217,24 @@ def _float(value: Any, field: str) -> float | None:
 
 def _map_row(row: dict[str, Any], dataset_type: str, mapping: dict[str, str]) -> dict[str, Any]:
     mapped = {target: _coerce(row.get(source)) for target, source in mapping.items() if source in row}
-    for field in ("due_at", "created_at", "starts_at", "ends_at", "resolved_at", "next_maintenance_due"):
+    for field in ("due_at", "created_at", "starts_at", "ends_at", "resolved_at", "next_maintenance_due", "medical_expiry", "currency_expiry"):
         if field in mapped:
             mapped[field] = _date(mapped[field], field)
     for field in ("readiness_confirmation", "is_read"):
         if field in mapped:
             mapped[field] = _boolean(mapped[field], field)
-    if "hours_since_check" in mapped:
-        mapped["hours_since_check"] = _float(mapped["hours_since_check"], "hours_since_check")
+    for field in ("hours_since_check", "duty_hours", "rest_hours"):
+        if field in mapped:
+            mapped[field] = _float(mapped[field], field)
     return mapped
 
 
 def _validate_row(row: dict[str, Any], dataset_type: str) -> dict[str, Any]:
     if dataset_type == "aircraft":
         payload = AircraftInput(**{k: v for k, v in row.items() if v is not None}, is_demo=False)
+        return payload.model_dump()
+    if dataset_type == "crew":
+        payload = CrewInput(**{k: v for k, v in row.items() if v is not None}, is_demo=False)
         return payload.model_dump()
     if dataset_type == "maintenance":
         allowed = {k: v for k, v in row.items() if k in {"title", "status", "priority", "due_at"} and v is not None}
@@ -243,6 +259,8 @@ def _validate_row(row: dict[str, Any], dataset_type: str) -> dict[str, Any]:
 def _duplicate_key(dataset_type: str, row: dict[str, Any]) -> tuple:
     if dataset_type == "aircraft":
         return (str(row["resource_id"]).strip().casefold(),)
+    if dataset_type == "crew":
+        return (str(row["display_id"]).strip().casefold(),)
     if dataset_type == "maintenance":
         return (str(row.get("aircraft_resource_id") or "").strip().casefold(), str(row["title"]).strip().casefold(), _date_key(row.get("due_at")))
     if dataset_type == "flights":
@@ -261,6 +279,8 @@ def _date_key(value: datetime | None) -> str | None:
 def _existing_keys(db: Session, dataset_type: str) -> set[tuple]:
     if dataset_type == "aircraft":
         return {(row.strip().casefold(),) for row in db.scalars(select(Aircraft.resource_id)).all()}
+    if dataset_type == "crew":
+        return {(row.strip().casefold(),) for row in db.scalars(select(Crew.display_id)).all()}
     if dataset_type == "maintenance":
         rows = db.execute(select(MaintenanceRecord.title, MaintenanceRecord.due_at, Aircraft.resource_id).outerjoin(Aircraft, MaintenanceRecord.aircraft_id == Aircraft.id)).all()
         return {(str(aircraft or "").strip().casefold(), str(title).strip().casefold(), _date_key(due)) for title, due, aircraft in rows}
@@ -321,7 +341,7 @@ def inspect_upload(filename: str, content: bytes, dataset_type: str, mapping: di
 
     return {"dataset_type": dataset_type, "headers": source_headers, "mapping": target_mapping,
             "row_count": len([r for r in source_rows if any(_coerce(v) is not None for v in r)]),
-            "valid_rows": len(table_rows), "will_import": len(table_rows) - duplicates, "will_skip": duplicates,
+            "valid_rows": len(table_rows), "rejected": len(errors), "will_import": len(table_rows) - duplicates, "will_skip": duplicates,
             "errors": errors[:100], "error_count": len(errors),
             "preview": [{"row": r["row_number"], **r["values"], "will_skip": r["will_skip"]} for r in table_rows[:MAX_PREVIEW_ROWS]],
             "ml_compatibility": _ml_compatibility(dataset_type, target_mapping, source_headers),
@@ -360,6 +380,8 @@ def commit_rows(db: Session, profile_id: int, inspected: dict[str, Any]) -> dict
                     continue
                 if dataset_type == "aircraft":
                     record = Aircraft(**values, data_origin="upload")
+                elif dataset_type == "crew":
+                    record = Crew(**values, data_origin="upload")
                 elif dataset_type == "maintenance":
                     aircraft_id = None
                     if values.get("aircraft_resource_id"):
@@ -391,7 +413,7 @@ def commit_rows(db: Session, profile_id: int, inspected: dict[str, Any]) -> dict
     except Exception:
         db.rollback()
         raise
-    return {"dataset_type": dataset_type, "inserted": inserted, "skipped": skipped, "failed": 0,
+    return {"dataset_type": dataset_type, "inserted": inserted, "skipped": skipped, "rejected": 0, "failed": 0,
             "policy": "Insert new records; skip matches by business identifier/natural key. No updates are performed."}
 
 

@@ -1,0 +1,2 @@
+display_id,group_name,readiness_status,display_name,role,license_rating,duty_hours,rest_hours,medical_expiry,currency_expiry
+DEMO-CREW-001,Training Group,ready,Sample Crew Member,Flight crew,Type rated,4.5,12,2027-06-01T00:00:00Z,2027-05-01T00:00:00Z

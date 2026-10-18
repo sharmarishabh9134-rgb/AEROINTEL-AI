@@ -75,6 +75,7 @@ class Crew(Base):
     medical_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     currency_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    data_origin: Mapped[str] = mapped_column(String(24), default="manual", nullable=False)
 
 
 class MaintenanceRecord(Base):
@@ -165,4 +166,4 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
-Index("ix_schedule_records_starts_status", ScheduleRecord.starts_at, ScheduleRecord.status)
+Index("ix_schedule_starts_status", ScheduleRecord.starts_at, ScheduleRecord.status)

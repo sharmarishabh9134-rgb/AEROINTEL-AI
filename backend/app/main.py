@@ -33,7 +33,8 @@ from backend.app.fleet_intelligence import router as fleet_intelligence_router
 from backend.app.aviation_public_data import fetch_public_aviation_data
 from backend.app.data_import import (MAX_FILE_BYTES, commit_rows as commit_import_rows,
                                     import_history as read_import_history,
-                                    inspect_upload as inspect_import_upload)
+                                    inspect_upload as inspect_import_upload,
+                                    template_csv as build_import_template)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("aerointel")
@@ -112,6 +113,7 @@ def migrate_dashboard_demo_fields():
             "license_rating": "VARCHAR(120)", "duty_hours": "FLOAT",
             "rest_hours": "FLOAT", "medical_expiry": "DATETIME",
             "currency_expiry": "DATETIME", "is_demo": "BOOLEAN NOT NULL DEFAULT 0",
+            "data_origin": "VARCHAR(24) NOT NULL DEFAULT 'manual'",
         },
         "maintenance_records": {"is_demo": "BOOLEAN NOT NULL DEFAULT 0", "data_origin": "VARCHAR(24) NOT NULL DEFAULT 'manual'"},
         "schedule_records": {
@@ -132,7 +134,7 @@ def migrate_dashboard_demo_fields():
             for name, sql_type in columns.items():
                 if name not in existing_columns:
                     connection.exec_driver_sql(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {sql_type}')
-    for table in ("aircraft", "maintenance_records", "schedule_records", "alerts"):
+    for table in ("aircraft", "crew", "maintenance_records", "schedule_records", "alerts"):
         if table in existing_tables:
             with engine.begin() as connection:
                 connection.exec_driver_sql(f'UPDATE "{table}" SET data_origin = \'synthetic_demo\' WHERE is_demo = 1 AND data_origin = \'manual\'')
@@ -228,6 +230,90 @@ def operational_read_access(credentials=Depends(bearer), db: Session = Depends(g
     return current_user(credentials, db) if credentials else None
 
 
+HEALTH_COUNT_MODELS = {
+    "aircraft": Aircraft,
+    "crew": Crew,
+    "maintenance_records": MaintenanceRecord,
+    "schedule_records": ScheduleRecord,
+    "alerts": Alert,
+    "weather_observations": WeatherObservation,
+    "analysis_reports": AnalysisReport,
+}
+
+
+def database_health_diagnostics(db: Session) -> dict[str, Any]:
+    """Return aggregate, non-sensitive DB diagnostics without reading row contents."""
+    result: dict[str, Any] = {
+        "migration_status": {
+            "history_tracking": "not_configured",
+            "schema_status": "unavailable",
+            "schema_check_scope": "required_tables_columns_and_indexes",
+            "missing_tables": [],
+            "missing_columns": {},
+            "missing_indexes": [],
+        },
+        "table_counts_status": "unavailable",
+        "table_counts": {},
+    }
+    try:
+        schema = inspect(db.get_bind())
+        table_names = set(schema.get_table_names())
+        missing_tables = sorted(set(Base.metadata.tables) - table_names)
+        missing_columns: dict[str, list[str]] = {}
+        for table, model in Base.metadata.tables.items():
+            if table not in table_names:
+                continue
+            actual_columns = {column["name"] for column in schema.get_columns(table)}
+            missing = sorted(set(model.columns.keys()) - actual_columns)
+            if missing:
+                missing_columns[table] = missing
+
+        required_indexes = {
+            "weather_observations": {"uq_weather_source_location_observed_at"},
+            "aircraft": {"uq_aircraft_resource_id_normalized"},
+            "crew": {"uq_crew_display_id_normalized"},
+        }
+        missing_indexes = []
+        for table, expected_names in required_indexes.items():
+            if table in table_names:
+                if db.get_bind().dialect.name == "sqlite":
+                    quoted_table = table.replace('"', '""')
+                    actual_names = {
+                        row[1] for row in db.connection().exec_driver_sql(
+                            f'PRAGMA index_list("{quoted_table}")'
+                        ).all()
+                    }
+                else:
+                    actual_names = {item.get("name") for item in schema.get_indexes(table)}
+                missing_indexes.extend(
+                    f"{table}.{name}" for name in sorted(expected_names - actual_names)
+                )
+
+        migration_status = result["migration_status"]
+        migration_status.update({
+            "schema_status": "compatible" if not (missing_tables or missing_columns or missing_indexes) else "drift",
+            "missing_tables": missing_tables,
+            "missing_columns": missing_columns,
+            "missing_indexes": sorted(missing_indexes),
+        })
+        unavailable_counts = []
+        for table, model in HEALTH_COUNT_MODELS.items():
+            if table not in table_names:
+                continue
+            try:
+                result["table_counts"][table] = int(db.scalar(select(func.count()).select_from(model)) or 0)
+            except SQLAlchemyError:
+                db.rollback()
+                result["table_counts"][table] = None
+                unavailable_counts.append(table)
+        result["table_counts_status"] = "partial" if unavailable_counts or missing_tables else "complete"
+        if unavailable_counts:
+            result["table_counts_unavailable"] = sorted(unavailable_counts)
+    except SQLAlchemyError:
+        db.rollback()
+    return result
+
+
 def selected_date_window(days: int) -> tuple[datetime, datetime]:
     if days not in {1, 7, 30}:
         raise HTTPException(status_code=422, detail="days must be 1, 7, or 30")
@@ -264,8 +350,32 @@ def health(db: Session = Depends(get_db)):
         db.execute(text("SELECT 1"))
         db_ok = True
     except SQLAlchemyError:
-        pass
-    return {"data": {"status": "ok" if db_ok else "degraded", "database": "connected" if db_ok else "unavailable", "database_dialect": engine.dialect.name, "mode": "demo" if settings.demo_mode else "configured", "weather": "configured" if settings.open_meteo_latitude is not None else "unconfigured", "ai": "configured" if settings.gemini_api_key else "fallback-enabled", "checked_at": datetime.now(timezone.utc).isoformat()}}
+        db.rollback()
+    diagnostics = database_health_diagnostics(db) if db_ok else {
+        "migration_status": {
+            "history_tracking": "not_configured",
+            "schema_status": "unavailable",
+            "schema_check_scope": "required_tables_columns_and_indexes",
+            "missing_tables": [],
+            "missing_columns": {},
+            "missing_indexes": [],
+        },
+        "table_counts_status": "unavailable",
+        "table_counts": {},
+    }
+    schema_ok = diagnostics["migration_status"]["schema_status"] == "compatible"
+    counts_ok = diagnostics["table_counts_status"] == "complete"
+    return {"data": {
+        "status": "ok" if db_ok and schema_ok and counts_ok else "degraded",
+        "database": "connected" if db_ok else "unavailable",
+        "database_dialect": db.get_bind().dialect.name,
+        "mode": "demo" if settings.demo_mode else "configured",
+        "data_source_mode": "synthetic_demo" if settings.demo_mode else "configured_database",
+        **diagnostics,
+        "weather": "configured" if settings.open_meteo_latitude is not None else "unconfigured",
+        "ai": "configured" if settings.gemini_api_key else "fallback-enabled",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }}
 
 
 @app.get("/api/client-config.js", include_in_schema=False)
@@ -780,6 +890,8 @@ async def commit_import(request: Request, profile: Profile = Depends(current_use
                   db: Session = Depends(get_db)):
     rate_limit(request, "import_commit", 10)
     filename, content, fields = await _read_import_request(request)
+    if fields.get("confirm_import", "").strip().lower() != "true":
+        raise HTTPException(status_code=400, detail="Explicitly confirm this import before writing records.")
     try:
         mapping = json.loads(fields.get("mapping_json", "{}"))
         if not isinstance(mapping, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in mapping.items()):
@@ -793,6 +905,19 @@ async def commit_import(request: Request, profile: Profile = Depends(current_use
         db.rollback()
         raise HTTPException(status_code=409, detail="A matching record was added concurrently. Preview the file again; no records were committed.")
     return {"data": result}
+
+
+@app.get("/api/imports/templates/{dataset_type}.csv")
+def import_template(dataset_type: str):
+    from backend.app.data_import import canonical_type
+    try:
+        normalized = canonical_type(dataset_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    content = build_import_template(normalized)
+    return Response(content=content, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{normalized}.csv"',
+                             "Cache-Control": "public, max-age=3600"})
 
 
 @app.get("/api/imports/history")

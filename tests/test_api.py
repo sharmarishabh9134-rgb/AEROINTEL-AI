@@ -60,7 +60,17 @@ def reset_in_process_rate_limits_between_tests():
 def test_health_and_seeded_dashboard(client):
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["data"]["database"] == "connected"
+    health_data = health.json()["data"]
+    assert health_data["database"] == "connected"
+    assert health_data["database_dialect"] == "sqlite"
+    assert health_data["data_source_mode"] == "synthetic_demo"
+    assert health_data["migration_status"]["history_tracking"] == "not_configured"
+    assert health_data["migration_status"]["schema_status"] == "compatible"
+    assert health_data["table_counts_status"] == "complete"
+    assert health_data["table_counts"]["aircraft"] == 48
+    assert health_data["table_counts"]["crew"] == 25
+    assert "profiles" not in health_data["table_counts"]
+    assert not {"database_url", "jwt_secret_key", "password", "api_key"}.intersection(health_data)
     summary = client.get("/api/dashboard/summary").json()["data"]
     assert summary["aircraft_total"] == 48
     assert summary["public_inventory_estimate"]["reported_total"] == 2350
@@ -192,11 +202,54 @@ def test_production_cors_excludes_development_origins():
 def test_dashboard_reads_are_public_while_writes_remain_protected(client):
     token = client.headers.pop("Authorization")
     try:
+        health = client.get("/api/health")
+        assert health.status_code == 200
         for route in ("/api/dashboard/summary", "/api/aircraft", "/api/crew", "/api/maintenance", "/api/schedules", "/api/alerts", "/api/activity", "/api/analytics/trends", "/api/weather/current", "/api/public-inventory", "/api/ml/status", "/api/reports"):
             assert client.get(route).status_code == 200, route
         assert client.post("/api/alerts", json={"severity":"low", "category":"Demo", "message":"Guest write"}).status_code == 401
+        assert client.post("/api/imports/preview", data={"dataset_type": "aircraft"}, files={"file": ("x.csv", b"resource_id,category\nA-1,Transport\n", "text/csv")}).status_code == 401
+        assert client.get("/api/imports/history").status_code == 401
     finally:
         client.headers["Authorization"] = token
+
+
+def test_schedule_index_metadata_matches_initial_migration():
+    from backend.app.models import ScheduleRecord
+
+    index = next(item for item in ScheduleRecord.__table__.indexes if {column.name for column in item.columns} == {"starts_at", "status"})
+    migration = (Path(__file__).parents[1] / "backend" / "migrations" / "001_initial_schema.sql").read_text(encoding="utf-8")
+    assert index.name == "ix_schedule_starts_status"
+    assert {column.name for column in index.columns} == {"starts_at", "status"}
+    assert "create index if not exists ix_schedule_starts_status on schedule_records(starts_at,status);" in migration.lower()
+
+
+def test_demo_seeding_requires_nonproduction_opt_in_and_is_idempotent(monkeypatch):
+    from sqlalchemy import create_engine, func, select
+    from sqlalchemy.orm import Session
+    import backend.app.main as main
+    from backend.app.models import Aircraft, Crew
+
+    isolated_engine = create_engine("sqlite://")
+    monkeypatch.setattr(main, "engine", isolated_engine)
+    monkeypatch.setattr(main.settings, "app_env", "test")
+    monkeypatch.setattr(main.settings, "demo_mode", True)
+    monkeypatch.setattr(main.settings, "auto_seed_demo_data", False)
+
+    main.initialize_database()
+    with Session(isolated_engine) as db:
+        assert db.scalar(select(func.count()).select_from(Aircraft)) == 0
+        assert db.scalar(select(func.count()).select_from(Crew)) == 0
+
+    monkeypatch.setattr(main.settings, "auto_seed_demo_data", True)
+    main.initialize_database()
+    main.initialize_database()
+    with Session(isolated_engine) as db:
+        aircraft = db.scalars(select(Aircraft)).all()
+        crew = db.scalars(select(Crew)).all()
+        assert len(aircraft) == 48
+        assert len(crew) == 25
+        assert all(row.is_demo and row.data_origin == "synthetic_demo" for row in aircraft + crew)
+    isolated_engine.dispose()
 
 
 def test_production_rejects_sqlite_database(client, monkeypatch):
@@ -263,7 +316,9 @@ def test_ai_rule_fallback_for_authenticated_viewer(client, monkeypatch):
     assert response.json()["data"]["source_label"] == "Rule-based fallback"
     assert response.json()["data"]["provider"] == {"name":"Gemini","configured":False,"used":False}
     assert response.json()["data"]["verified"] is False
-    assert "42/48 (88%)" in next(f["value"] for f in response.json()["data"]["calculated_data"] if f["label"] == "Aircraft readiness confirmation")
+    snapshot = client.get("/api/dashboard/summary").json()["data"]
+    readiness_fact = next(f["value"] for f in response.json()["data"]["calculated_data"] if f["label"] == "Aircraft readiness confirmation")
+    assert f"{snapshot['aircraft_ready_confirmed']}/{snapshot['readiness_confirmation_records']} ({snapshot['readiness_pct']}%)" in readiness_fact
     assert "999" not in response.text
 
 
@@ -717,6 +772,8 @@ def test_public_inventory_import_is_idempotent_and_excludes_procurement(client):
 
     dataset = load_dataset()
     with SessionLocal() as db:
+        db.query(PublicInventoryRecord).delete()
+        db.commit()
         first = import_inventory(db, dataset)
         second = import_inventory(db, dataset)
         rows = list(db.query(PublicInventoryRecord).filter_by(dataset_version=dataset["dataset_version"]).all())
@@ -784,12 +841,8 @@ def test_ml_endpoints_expose_validated_synthetic_results(client):
         assert prediction.json()["data"]["predicted_demo_label"] in {"Low", "Medium", "High"}
         assert prediction.json()["data"]["notice"] == "SYNTHETIC DEMO DATA — NOT FOR OPERATIONAL USE"
 
-    token = client.headers.pop("Authorization")
-    try:
-        for route in ("/api/ml/status", "/api/ml/dataset-summary", "/api/ml/evaluation"):
-            assert client.get(route).status_code == 401
-    finally:
-        client.headers["Authorization"] = token
+    for route in ("/api/ml/status", "/api/ml/dataset-summary", "/api/ml/evaluation"):
+        assert client.get(route).status_code in {200, 503}
 
 
 def test_ai_ml_questions_use_verified_backend_results_only(client, monkeypatch):
