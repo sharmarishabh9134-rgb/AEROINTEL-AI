@@ -1,0 +1,2 @@
+resource_id,category,availability_status,maintenance_status,registration,aircraft_type,base_airport,readiness_confirmation,notes,next_maintenance_due,hours_since_check
+DEMO-AIR-001,Transport,available,clear,N123AA,Example Twinjet,VIDP,true,Training sample only,2026-12-01T00:00:00Z,120.5

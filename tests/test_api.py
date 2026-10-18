@@ -227,15 +227,28 @@ def test_registration_login_and_server_assigned_viewer_role(client):
     assert client.post("/api/auth/login", json={"email":"sample@example.com", "password":"incorrect"}).status_code == 401
 
 
-def test_role_protected_alert_write(client):
+def test_signed_in_viewers_can_add_records_without_edit_privileges(client):
     token = client.headers.pop("Authorization")
     assert client.post("/api/alerts", json={"severity":"low", "category":"Demo", "message":"Guest write"}).status_code == 401
     assert client.get("/api/reports").status_code == 200
     client.headers["Authorization"] = token
     registration = client.post("/api/auth/register", json={"email":"viewer@example.com", "password":"another-strong-passphrase"}).json()
     token = registration["data"]["access_token"]
-    response = client.post("/api/alerts", headers={"Authorization":f"Bearer {token}"}, json={"severity":"low", "category":"Demo", "message":"A test alert"})
-    assert response.status_code == 403
+    headers = {"Authorization":f"Bearer {token}"}
+    assert registration["data"]["user"]["role"] == "viewer"
+    alert = client.post("/api/alerts", headers=headers, json={"severity":"low", "category":"Demo", "message":"A viewer-submitted alert"})
+    assert alert.status_code == 201
+    aircraft = client.post("/api/aircraft", headers=headers, json={"resource_id":f"VIEW-{uuid.uuid4().hex[:8].upper()}", "category":"Transport", "availability_status":"available", "maintenance_status":"clear"})
+    assert aircraft.status_code == 201
+    crew = client.post("/api/crew", headers=headers, json={"display_id":f"VIEW-{uuid.uuid4().hex[:8].upper()}", "group_name":"Viewer entry", "readiness_status":"ready"})
+    assert crew.status_code == 201
+    maintenance = client.post("/api/maintenance", headers=headers, json={"title":f"Viewer maintenance {uuid.uuid4().hex[:6]}", "status":"open"})
+    assert maintenance.status_code == 201
+    starts_at = (datetime.now(timezone.utc) + timedelta(days=40)).replace(microsecond=0)
+    ends_at = starts_at + timedelta(hours=1)
+    schedule = client.post("/api/schedules", headers=headers, json={"title":f"Viewer schedule {uuid.uuid4().hex[:6]}", "category":"training", "status":"scheduled", "starts_at":starts_at.isoformat(), "ends_at":ends_at.isoformat()})
+    assert schedule.status_code == 201
+    assert client.patch(f"/api/alerts/{alert.json()['data']['id']}/acknowledge", headers=headers).status_code == 403
 
 
 def test_ai_rule_fallback_for_authenticated_viewer(client, monkeypatch):

@@ -34,6 +34,7 @@ class Aircraft(Base):
     next_maintenance_due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     hours_since_check: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    data_origin: Mapped[str] = mapped_column(String(24), default="manual", nullable=False)
 
 
 class PublicInventoryRecord(Base):
@@ -86,6 +87,7 @@ class MaintenanceRecord(Base):
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    data_origin: Mapped[str] = mapped_column(String(24), default="manual", nullable=False)
 
 
 class WeatherObservation(Base):
@@ -126,6 +128,7 @@ class ScheduleRecord(Base):
     origin_icao: Mapped[str | None] = mapped_column(String(4), nullable=True)
     destination_icao: Mapped[str | None] = mapped_column(String(4), nullable=True)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    data_origin: Mapped[str] = mapped_column(String(24), default="manual", nullable=False)
 
 
 class Alert(Base):
@@ -139,6 +142,7 @@ class Alert(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    data_origin: Mapped[str] = mapped_column(String(24), default="manual", nullable=False)
 
 
 class AnalysisReport(Base):

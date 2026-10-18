@@ -1,0 +1,2 @@
+aircraft_resource_id,title,status,priority,due_at,created_at
+DEMO-AIR-001,Sample inspection task,open,normal,2026-11-01T12:00:00Z,2026-10-18T10:00:00Z

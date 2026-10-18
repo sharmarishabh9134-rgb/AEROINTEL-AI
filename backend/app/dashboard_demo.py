@@ -125,6 +125,7 @@ def seed_dashboard_demo_data(db: Session, *, allow_production: bool = False) -> 
         row.hours_since_check = float(18 + (index * 11) % 260)
         row.updated_at = now - timedelta(hours=index % 120)
         row.is_demo = True
+        row.data_origin = "synthetic_demo"
         row.notes = ("SYNTHETIC DEMO ONLY. Aircraft type is drawn from a dated public estimate; "
                      "registration, airport assignment, status, and maintenance values are fictional.")
 
@@ -152,6 +153,7 @@ def seed_dashboard_demo_data(db: Session, *, allow_production: bool = False) -> 
         row.created_at = now - timedelta(days=index % 7, hours=index % 12)
         row.due_at = now + timedelta(days=(index % 9) - 3)
         row.is_demo = True
+        row.data_origin = "synthetic_demo"
         row.title = f"SYNTHETIC DEMO inspection · {aircraft[index % len(aircraft)].resource_id if aircraft else 'unassigned'}"
 
     for index, row in enumerate(schedules):
@@ -166,10 +168,12 @@ def seed_dashboard_demo_data(db: Session, *, allow_production: bool = False) -> 
         row.category = "Flight · synthetic demo" if index % 2 == 0 else "Maintenance · synthetic demo"
         row.status = "complete" if offset < 0 and index % 3 == 0 else "in_progress" if offset <= 0 else "scheduled"
         row.is_demo = True
+        row.data_origin = "synthetic_demo"
         row.title = f"DEMO task {index + 1:02d} · {row.origin_icao} to {row.destination_icao}"
 
     for index, row in enumerate(alerts):
         row.is_demo = True
+        row.data_origin = "synthetic_demo"
         row.is_read = bool(index == 2)
         row.created_at = now - timedelta(hours=index + 1)
         if index == 0:

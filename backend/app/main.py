@@ -1,6 +1,8 @@
 import json
 import logging
 import time
+from email import policy
+from email.parser import BytesParser
 from contextlib import asynccontextmanager
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
@@ -29,6 +31,9 @@ from backend.app.ml_analytics import (NOTICE as ML_NOTICE, assistant_results as 
 from backend.app.schemas import MaintenanceDemoPrediction
 from backend.app.fleet_intelligence import router as fleet_intelligence_router
 from backend.app.aviation_public_data import fetch_public_aviation_data
+from backend.app.data_import import (MAX_FILE_BYTES, commit_rows as commit_import_rows,
+                                    import_history as read_import_history,
+                                    inspect_upload as inspect_import_upload)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("aerointel")
@@ -92,7 +97,7 @@ def migrate_weather_provenance():
 
 
 def migrate_dashboard_demo_fields():
-    """Apply additive SQLite-only fields; PostgreSQL uses reviewed migration 006."""
+    """Apply additive SQLite dashboard/provenance fields; PostgreSQL uses reviewed migrations 006 and 007."""
     if engine.dialect.name != "sqlite":
         return
     additions = {
@@ -100,6 +105,7 @@ def migrate_dashboard_demo_fields():
             "registration": "VARCHAR(24)", "aircraft_type": "VARCHAR(140)", "base_airport": "VARCHAR(4)",
             "next_maintenance_due": "DATETIME", "hours_since_check": "FLOAT",
             "is_demo": "BOOLEAN NOT NULL DEFAULT 0",
+            "data_origin": "VARCHAR(24) NOT NULL DEFAULT 'manual'",
         },
         "crew": {
             "display_name": "VARCHAR(100)", "role": "VARCHAR(60)",
@@ -107,14 +113,14 @@ def migrate_dashboard_demo_fields():
             "rest_hours": "FLOAT", "medical_expiry": "DATETIME",
             "currency_expiry": "DATETIME", "is_demo": "BOOLEAN NOT NULL DEFAULT 0",
         },
-        "maintenance_records": {"is_demo": "BOOLEAN NOT NULL DEFAULT 0"},
+        "maintenance_records": {"is_demo": "BOOLEAN NOT NULL DEFAULT 0", "data_origin": "VARCHAR(24) NOT NULL DEFAULT 'manual'"},
         "schedule_records": {
             "aircraft_id": "INTEGER REFERENCES aircraft(id) ON DELETE SET NULL",
             "priority": "VARCHAR(20) NOT NULL DEFAULT 'normal'", "assignee": "VARCHAR(100)",
             "origin_icao": "VARCHAR(4)", "destination_icao": "VARCHAR(4)",
-            "is_demo": "BOOLEAN NOT NULL DEFAULT 0",
+            "is_demo": "BOOLEAN NOT NULL DEFAULT 0", "data_origin": "VARCHAR(24) NOT NULL DEFAULT 'manual'",
         },
-        "alerts": {"is_read": "BOOLEAN NOT NULL DEFAULT 0", "is_demo": "BOOLEAN NOT NULL DEFAULT 0"},
+        "alerts": {"is_read": "BOOLEAN NOT NULL DEFAULT 0", "is_demo": "BOOLEAN NOT NULL DEFAULT 0", "data_origin": "VARCHAR(24) NOT NULL DEFAULT 'manual'"},
         "analysis_reports": {"is_demo": "BOOLEAN NOT NULL DEFAULT 0"},
     }
     with engine.begin() as connection:
@@ -126,6 +132,13 @@ def migrate_dashboard_demo_fields():
             for name, sql_type in columns.items():
                 if name not in existing_columns:
                     connection.exec_driver_sql(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {sql_type}')
+    for table in ("aircraft", "maintenance_records", "schedule_records", "alerts"):
+        if table in existing_tables:
+            with engine.begin() as connection:
+                connection.exec_driver_sql(f'UPDATE "{table}" SET data_origin = \'synthetic_demo\' WHERE is_demo = 1 AND data_origin = \'manual\'')
+    if "schedule_records" in existing_tables:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_schedule_records_aircraft_id ON schedule_records(aircraft_id)")
 
 
 def initialize_database():
@@ -252,7 +265,7 @@ def health(db: Session = Depends(get_db)):
         db_ok = True
     except SQLAlchemyError:
         pass
-    return {"data": {"status": "ok" if db_ok else "degraded", "database": "connected" if db_ok else "unavailable", "mode": "demo" if settings.demo_mode else "configured", "weather": "configured" if settings.open_meteo_latitude is not None else "unconfigured", "ai": "configured" if settings.gemini_api_key else "fallback-enabled", "checked_at": datetime.now(timezone.utc).isoformat()}}
+    return {"data": {"status": "ok" if db_ok else "degraded", "database": "connected" if db_ok else "unavailable", "database_dialect": engine.dialect.name, "mode": "demo" if settings.demo_mode else "configured", "weather": "configured" if settings.open_meteo_latitude is not None else "unconfigured", "ai": "configured" if settings.gemini_api_key else "fallback-enabled", "checked_at": datetime.now(timezone.utc).isoformat()}}
 
 
 @app.get("/api/client-config.js", include_in_schema=False)
@@ -412,10 +425,13 @@ def aircraft(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
 
 
 @app.post("/api/aircraft", status_code=201)
-def create_aircraft(payload: AircraftInput, profile: Profile = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+def create_aircraft(payload: AircraftInput, request: Request, profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
+    rate_limit(request, "create_aircraft", 30)
     if db.scalar(select(Aircraft.id).where(Aircraft.resource_id == payload.resource_id)):
         raise HTTPException(status_code=409, detail="That resource ID already exists")
-    row = Aircraft(**payload.model_dump())
+    row_data = payload.model_dump()
+    row_data["is_demo"] = False
+    row = Aircraft(**row_data)
     db.add(row)
     try:
         db.flush()
@@ -463,10 +479,13 @@ def crew(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), day
 
 
 @app.post("/api/crew", status_code=201)
-def create_crew(payload: CrewInput, profile: Profile = Depends(require_roles("admin")), db: Session = Depends(get_db)):
+def create_crew(payload: CrewInput, request: Request, profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
+    rate_limit(request, "create_crew", 30)
     if db.scalar(select(Crew.id).where(Crew.display_id == payload.display_id)):
         raise HTTPException(status_code=409, detail="That crew ID already exists")
-    row = Crew(**payload.model_dump())
+    row_data = payload.model_dump()
+    row_data["is_demo"] = False
+    row = Crew(**row_data)
     db.add(row)
     try:
         db.flush()
@@ -513,10 +532,13 @@ def maintenance(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=
 
 
 @app.post("/api/maintenance", status_code=201)
-def create_maintenance(payload: MaintenanceInput, profile: Profile = Depends(require_roles("admin", "analyst")), db: Session = Depends(get_db)):
+def create_maintenance(payload: MaintenanceInput, request: Request, profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
+    rate_limit(request, "create_maintenance", 30)
     if payload.aircraft_id is not None and not db.get(Aircraft, payload.aircraft_id):
         raise HTTPException(status_code=404, detail="Linked aircraft record not found")
-    row = MaintenanceRecord(**payload.model_dump())
+    row_data = payload.model_dump()
+    row_data["is_demo"] = False
+    row = MaintenanceRecord(**row_data)
     db.add(row)
     db.flush()
     if row.aircraft_id is not None and row.status in {"open", "in_progress", "overdue"}:
@@ -573,13 +595,16 @@ def schedule_conflicts(starts_at: datetime = Query(...), ends_at: datetime = Que
 
 
 @app.post("/api/schedules", status_code=201)
-def create_schedule(payload: ScheduleInput, profile: Profile = Depends(require_roles("admin", "analyst")), db: Session = Depends(get_db)):
+def create_schedule(payload: ScheduleInput, request: Request, profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
+    rate_limit(request, "create_schedule", 30)
     if payload.ends_at is None:
         raise HTTPException(status_code=422, detail="ends_at is required to validate schedule conflicts")
     overlaps = db.scalars(select(ScheduleRecord).where(ScheduleRecord.status.not_in(["complete", "cancelled"]), ScheduleRecord.starts_at < payload.ends_at, ScheduleRecord.ends_at > payload.starts_at)).all()
     if overlaps:
         raise HTTPException(status_code=409, detail={"message":"This schedule conflicts with existing items", "conflicts":rows_as_dict(overlaps)})
-    row = ScheduleRecord(**payload.model_dump())
+    row_data = payload.model_dump()
+    row_data["is_demo"] = False
+    row = ScheduleRecord(**row_data)
     db.add(row)
     db.flush()
     db.add(AuditLog(profile_id=profile.id, action="schedule.created", details=row.title))
@@ -641,7 +666,8 @@ async def public_aviation_data(_profile: Profile | None = Depends(operational_re
 
 
 @app.post("/api/alerts", status_code=201)
-def create_alert(payload: AlertCreate, profile: Profile = Depends(require_roles("admin", "analyst")), db: Session = Depends(get_db)):
+def create_alert(payload: AlertCreate, request: Request, profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
+    rate_limit(request, "create_alert", 30)
     alert = Alert(severity=payload.severity, category=payload.category, message=payload.message)
     db.add(alert)
     db.add(AuditLog(profile_id=profile.id, action="alert.created", details=payload.category))
@@ -696,6 +722,83 @@ def airspace(_profile: Profile = Depends(operational_read_access)):
 def activity(limit: int = Query(10, ge=1, le=50), _profile: Profile | None = Depends(operational_read_access), db: Session = Depends(get_db)):
     rows = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(limit)).all()
     return {"data": rows_as_dict(rows)}
+
+
+async def _read_import_request(request: Request) -> tuple[str, bytes, dict[str, str]]:
+    if "multipart/form-data" not in request.headers.get("content-type", "").lower():
+        raise HTTPException(status_code=415, detail="Upload must use multipart/form-data.")
+    body = await request.body()
+    if len(body) > MAX_FILE_BYTES + 64 * 1024:
+        raise HTTPException(status_code=413, detail="Request exceeds the 5 MB file upload limit.")
+    content_type = request.headers["content-type"].encode("ascii", "ignore")
+    message = BytesParser(policy=policy.default).parsebytes(
+        b"Content-Type: " + content_type + b"\r\nMIME-Version: 1.0\r\n\r\n" + body)
+    if not message.is_multipart():
+        raise HTTPException(status_code=400, detail="Malformed multipart upload.")
+    fields: dict[str, str] = {}
+    filename = ""
+    content = b""
+    for part in message.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        payload = part.get_payload(decode=True) or b""
+        part_filename = part.get_filename()
+        if name == "file" and part_filename is not None:
+            if filename:
+                raise HTTPException(status_code=400, detail="Upload must contain exactly one file.")
+            filename, content = part_filename, payload
+        elif name:
+            try:
+                fields[name] = payload.decode(part.get_content_charset() or "utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise HTTPException(status_code=400, detail="Form fields must use UTF-8 encoding.") from exc
+    if not filename:
+        raise HTTPException(status_code=400, detail="A file field is required.")
+    if len(content) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 5 MB upload limit.")
+    return filename, content, fields
+
+
+@app.post("/api/imports/preview")
+async def preview_import(request: Request, profile: Profile = Depends(current_user),
+                   db: Session = Depends(get_db)):
+    rate_limit(request, "import_preview", 20)
+    filename, content, fields = await _read_import_request(request)
+    try:
+        mapping = json.loads(fields.get("mapping_json", "{}"))
+        if not isinstance(mapping, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in mapping.items()):
+            raise ValueError("Column mapping must be a JSON object of dataset fields to source columns.")
+        result = inspect_import_upload(filename, content, fields.get("dataset_type", ""), mapping or None, db)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    result.pop("_rows", None)
+    result["limits"] = {"max_file_bytes": MAX_FILE_BYTES, "max_rows": 2000}
+    return {"data": result}
+
+
+@app.post("/api/imports/commit", status_code=201)
+async def commit_import(request: Request, profile: Profile = Depends(current_user),
+                  db: Session = Depends(get_db)):
+    rate_limit(request, "import_commit", 10)
+    filename, content, fields = await _read_import_request(request)
+    try:
+        mapping = json.loads(fields.get("mapping_json", "{}"))
+        if not isinstance(mapping, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in mapping.items()):
+            raise ValueError("Column mapping must be a JSON object of dataset fields to source columns.")
+        inspected = inspect_import_upload(filename, content, fields.get("dataset_type", ""), mapping or None, db)
+        result = commit_import_rows(db, profile.id, inspected)
+    except (ValueError, json.JSONDecodeError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A matching record was added concurrently. Preview the file again; no records were committed.")
+    return {"data": result}
+
+
+@app.get("/api/imports/history")
+def imports_history(limit: int = Query(20, ge=1, le=100),
+                    profile: Profile = Depends(current_user), db: Session = Depends(get_db)):
+    return {"data": read_import_history(db, limit)}
 
 
 def _ml_dataset_summary():

@@ -1,0 +1,2 @@
+title,category,status,starts_at,ends_at,aircraft_resource_id,priority,assignee,origin_icao,destination_icao
+Sample Flight 001,Flight,scheduled,2026-10-20T08:00:00Z,2026-10-20T10:00:00Z,DEMO-AIR-001,normal,Ops Team,VIDP,VABB
