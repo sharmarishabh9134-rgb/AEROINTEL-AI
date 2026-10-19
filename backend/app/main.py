@@ -207,7 +207,7 @@ def health(db: Session = Depends(get_db)):
 @app.get("/api/client-config.js", include_in_schema=False)
 def client_config():
     import json
-    value = json.dumps({"apiBaseUrl": settings.public_api_base_url}, separators=(",", ":"))
+    value = json.dumps({"apiBaseUrl": settings.public_api_base_url, "weatherLocation": {"name": settings.open_meteo_location, "latitude": settings.open_meteo_latitude, "longitude": settings.open_meteo_longitude}}, separators=(",", ":"))
     return Response(f"window.AEROINTEL_CONFIG = Object.freeze({value});", media_type="application/javascript", headers={"Cache-Control": "no-store"})
 
 
