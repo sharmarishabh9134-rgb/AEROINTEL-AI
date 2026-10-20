@@ -629,7 +629,7 @@ def test_public_inventory_import_is_idempotent_and_excludes_procurement(client):
         rows = list(db.query(PublicInventoryRecord).filter_by(dataset_version=dataset["dataset_version"]).all())
         summary = inventory_summary(rows, dataset)
     assert first["records"] == 62
-    assert first["inserted"] == 62
+    assert first["inserted"] + first["updated"] == 62  # the app already imports the dataset at startup
     assert second["inserted"] == 0 and second["updated"] == 62
     assert summary["service_totals"] == {"Indian Air Force": 1699, "Indian Army Aviation": 367, "Indian Navy Aviation": 287}
     assert summary["inventory_total"] == 2353
@@ -813,3 +813,17 @@ def test_weather_uses_met_norway_when_open_meteo_is_rate_limited(client, monkeyp
     assert result["current"]["wind_speed_10m"] == 7.2  # 2.0 m/s converted to km/h
     assert all(row["source"] == "met-no" for row in result["hourly"])
     assert saved == 8
+
+
+def test_public_inventory_exposes_roles_and_reference_notes(client):
+    from backend.app.inventory import load_dataset
+
+    dataset = load_dataset()
+    assert len(dataset["reference_notes"]) >= 4
+    su30 = next(row for row in dataset["records"] if row["organization"] == "Indian Air Force" and row["display_name"] == "Su-30MKI")
+    assert su30["estimated_count"] == 258 and "Heavy multirole fighter" in su30["role"]
+    token = client.post("/api/auth/register", json={"email": "inventory-roles@example.com", "password": "Sample#Pass12345", "full_name": "Viewer"}).json()["data"]["access_token"]
+    body = client.get("/api/public-inventory?organization=Indian Air Force&model=Su-30", headers={"Authorization": f"Bearer {token}"}).json()
+    assert body["data"][0]["estimated_count"] == 258
+    assert "Heavy multirole fighter" in body["data"][0]["role"]
+    assert body["meta"]["reference_notes"] == dataset["reference_notes"]

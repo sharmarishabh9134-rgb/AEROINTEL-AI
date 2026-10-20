@@ -129,6 +129,12 @@ def initialize_database():
         # seed_demo_data only fills tables that are empty and never deletes rows.
         with Session(engine) as db:
             seed_demo_data(db)
+            try:
+                # Keep the bundled fleet inventory current (roles, notes) on every start.
+                import_inventory(db, load_dataset())
+            except Exception as exc:
+                db.rollback()
+                logger.warning("Fleet inventory import skipped (%s)", type(exc).__name__)
 
 
 @asynccontextmanager
@@ -307,6 +313,7 @@ def public_inventory(
         "source_name": dataset["source_name"],
         "source_url": dataset["source_url"],
         "source_note": dataset.get("source_note"),
+        "reference_notes": dataset.get("reference_notes", []),
         "source_date": dataset["source_date"],
         "last_imported_at": last_import.isoformat() if last_import else None,
         "data_classification": "ESTIMATE",

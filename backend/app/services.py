@@ -220,11 +220,12 @@ def trend_series(db: Session, days: int, mode: str = "live") -> dict:
     locations = sorted({record["location"] for record in records if record["location"]})
     fetched = [record["fetched_at"] for record in records if record["fetched_at"]]
     source_label = weather_source_label(records, mode)
-    mixed = len(sources) > 1
+    # Open-Meteo and MET Norway are both live providers; only live + demo counts as mixed.
+    mixed = len({"demo" if name == "demo" else "live" for name in sources}) > 1
     return {"weather": records, "readiness": [], "meta": {
         "empty": not records,
         "mode": mode,
-        "source": sources[0] if len(sources) == 1 else "mixed" if mixed else None,
+        "source": sources[0] if len(sources) == 1 else "mixed" if mixed else "live" if sources else None,
         "sources": sources,
         "source_label": source_label,
         "warning": "Multiple weather sources are present; this graph is not live-only." if mixed else None,
