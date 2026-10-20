@@ -19,7 +19,7 @@ from backend.app.schemas import (AlertCreate, AircraftInput, AircraftUpdate, Ana
 from backend.app.security import bearer, create_access_token, current_user, get_jwt_secret, password_hash, require_roles
 from backend.app.services import analyze, classify_analyzer_intent, dashboard_summary, fetch_weather, rows_as_dict, trend_series
 from backend.app.inventory import filtered_inventory, import_inventory, inventory_summary, load_dataset
-from backend.app.seed import seed_demo_data
+from backend.app.seed import remove_demo_aircraft, seed_demo_data
 from backend.app.ml_analytics import (NOTICE as ML_NOTICE, assistant_results as ml_assistant_results,
                                       dataset_summary as ml_dataset_summary,
                                       evaluation_metrics as ml_evaluation_metrics,
@@ -128,6 +128,7 @@ def initialize_database():
         # Sample data is always loaded in demo mode so every tab has content.
         # seed_demo_data only fills tables that are empty and never deletes rows.
         with Session(engine) as db:
+            remove_demo_aircraft(db)
             seed_demo_data(db)
             try:
                 # Keep the bundled fleet inventory current (roles, notes) on every start.

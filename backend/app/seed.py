@@ -28,13 +28,18 @@ def remove_seeded_demo_data(db: Session) -> int:
     return removed
 
 
+def remove_demo_aircraft(db: Session) -> int:
+    """Delete only the fictional DEMO-A-* airframes created by earlier sample seeding."""
+    removed = db.execute(delete(Aircraft).where(Aircraft.resource_id.like("DEMO-A-%"))).rowcount or 0
+    if removed:
+        db.commit()
+    return removed
+
+
 def seed_demo_data(db: Session) -> None:
     """Insert fictional demo rows only into an empty table; never wipes existing data."""
     now = datetime.now(timezone.utc)
-    if db.scalar(select(Aircraft.id).limit(1)) is None:
-        for i in range(1, 49):
-            maintenance = i in {4, 9, 14, 22, 35, 41}
-            db.add(Aircraft(resource_id=f"DEMO-A-{i:03d}", category=["Transport", "Training", "Utility"][i % 3], availability_status="maintenance" if maintenance else "available" if i % 5 else "standby", maintenance_status="in_progress" if maintenance else "clear", readiness_confirmation=not maintenance, notes="Fictional sample record"))
+    # Aircraft are intentionally not seeded: the fleet comes from the supplied inventory dataset.
     if db.scalar(select(Crew.id).limit(1)) is None:
         for i in range(1, 26):
             db.add(Crew(display_id=f"DEMO-C-{i:03d}", group_name=f"Group {(i - 1) // 5 + 1}", readiness_status="ready" if i % 17 else "review", confirmation_at=now - timedelta(hours=i)))

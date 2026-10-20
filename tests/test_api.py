@@ -61,13 +61,12 @@ def test_health_and_seeded_dashboard(client):
     assert health.status_code == 200
     assert health.json()["data"]["database"] == "connected"
     summary = client.get("/api/dashboard/summary").json()["data"]
-    assert summary["aircraft_total"] == 48
+    assert summary["aircraft_total"] == 0  # no fictional aircraft; the fleet comes from the supplied inventory
     assert summary["public_inventory_estimate"]["reported_total"] == 2350
     assert summary["public_inventory_estimate"]["listed_row_total"] == 2353
-    assert summary["aircraft_available"] > 0
     assert summary["meta"]["data_mode"] == "demo"
-    assert summary["readiness_pct"] == 88  # 42 explicit confirmations / 48 explicit booleans
-    assert summary["availability_pct"] == 71  # 34 available / 48 recognized statuses
+    assert summary["readiness_pct"] is None
+    assert summary["availability_pct"] is None
     assert summary["resource_utilization_pct"] is None
     assert summary["metric_basis"]["rounding"] == "nearest whole percentage; exact half values round up"
     assert summary["maintenance_open"] == 9
@@ -167,7 +166,8 @@ def test_ai_rule_fallback_for_authenticated_viewer(client, monkeypatch):
     assert response.json()["data"]["source_label"] == "Rule-based fallback"
     assert response.json()["data"]["provider"] == {"name":"Gemini","configured":False,"used":False}
     assert response.json()["data"]["verified"] is False
-    assert "42/48 (88%)" in next(f["value"] for f in response.json()["data"]["calculated_data"] if f["label"] == "Aircraft readiness confirmation")
+    # No aircraft records exist, so readiness must be reported as unavailable, never invented.
+    assert "Unavailable" in next(f["value"] for f in response.json()["data"]["calculated_data"] if f["label"] == "Aircraft readiness confirmation")
     assert "999" not in response.text
 
 
