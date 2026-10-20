@@ -662,7 +662,7 @@ def test_public_inventory_api_filters_and_attributes_source(client):
     assert body["meta"]["data_classification"] == "ESTIMATE"
     assert body["meta"]["source_url"] == "https://www.globalmilitary.net/air_forces/ind/"
     assert body["meta"]["source_date"].startswith("2026-10-10")
-    assert "conflicts with the supplied service-level breakdown" in body["meta"]["source_note"]
+    assert "Detailed active model rows sum to 1,699" in body["meta"]["source_note"]
     assert "not official operational readiness" in body["meta"]["notice"]
 
 
